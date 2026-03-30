@@ -1,6 +1,6 @@
 namespace win9xplorer
 {
-    partial class OptionsDialog
+    internal partial class OptionsDialog
     {
         /// <summary>
         /// Required designer variable.
@@ -26,11 +26,16 @@ namespace win9xplorer
             lblListViewPreview = new Label();
             btnListViewFont = new Button();
             btnResetListViewFont = new Button();
+
+            grpFileOperations = new GroupBox();
+            lblConflictBehavior = new Label();
+            cmbConflictBehavior = new ComboBox();
             
             btnOK = new Button();
             btnCancel = new Button();
             
             grpFonts.SuspendLayout();
+            grpFileOperations.SuspendLayout();
             SuspendLayout();
             
             // 
@@ -138,14 +143,46 @@ namespace win9xplorer
             btnResetListViewFont.Text = "Reset";
             btnResetListViewFont.UseVisualStyleBackColor = true;
             btnResetListViewFont.Click += BtnResetListViewFont_Click;
+
+            // 
+            // grpFileOperations
+            // 
+            grpFileOperations.Controls.Add(lblConflictBehavior);
+            grpFileOperations.Controls.Add(cmbConflictBehavior);
+            grpFileOperations.Location = new Point(12, 178);
+            grpFileOperations.Name = "grpFileOperations";
+            grpFileOperations.Size = new Size(460, 65);
+            grpFileOperations.TabIndex = 8;
+            grpFileOperations.TabStop = false;
+            grpFileOperations.Text = "File Operations";
+
+            // 
+            // lblConflictBehavior
+            // 
+            lblConflictBehavior.AutoSize = true;
+            lblConflictBehavior.Location = new Point(15, 30);
+            lblConflictBehavior.Name = "lblConflictBehavior";
+            lblConflictBehavior.Size = new Size(117, 15);
+            lblConflictBehavior.TabIndex = 0;
+            lblConflictBehavior.Text = "Name conflict action:";
+
+            // 
+            // cmbConflictBehavior
+            // 
+            cmbConflictBehavior.DropDownStyle = ComboBoxStyle.DropDownList;
+            cmbConflictBehavior.FormattingEnabled = true;
+            cmbConflictBehavior.Location = new Point(140, 26);
+            cmbConflictBehavior.Name = "cmbConflictBehavior";
+            cmbConflictBehavior.Size = new Size(220, 23);
+            cmbConflictBehavior.TabIndex = 1;
             
             // 
             // btnOK
             // 
-            btnOK.Location = new Point(316, 190);
+            btnOK.Location = new Point(316, 255);
             btnOK.Name = "btnOK";
             btnOK.Size = new Size(75, 30);
-            btnOK.TabIndex = 8;
+            btnOK.TabIndex = 9;
             btnOK.Text = "OK";
             btnOK.UseVisualStyleBackColor = true;
             btnOK.Click += BtnOK_Click;
@@ -154,10 +191,10 @@ namespace win9xplorer
             // btnCancel
             // 
             btnCancel.DialogResult = DialogResult.Cancel;
-            btnCancel.Location = new Point(397, 190);
+            btnCancel.Location = new Point(397, 255);
             btnCancel.Name = "btnCancel";
             btnCancel.Size = new Size(75, 30);
-            btnCancel.TabIndex = 9;
+            btnCancel.TabIndex = 10;
             btnCancel.Text = "Cancel";
             btnCancel.UseVisualStyleBackColor = true;
             btnCancel.Click += BtnCancel_Click;
@@ -169,8 +206,9 @@ namespace win9xplorer
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
             CancelButton = btnCancel;
-            ClientSize = new Size(484, 235);
+            ClientSize = new Size(484, 300);
             Controls.Add(grpFonts);
+            Controls.Add(grpFileOperations);
             Controls.Add(btnOK);
             Controls.Add(btnCancel);
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -184,6 +222,8 @@ namespace win9xplorer
             
             grpFonts.ResumeLayout(false);
             grpFonts.PerformLayout();
+            grpFileOperations.ResumeLayout(false);
+            grpFileOperations.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -198,6 +238,9 @@ namespace win9xplorer
         private Label lblListViewPreview;
         private Button btnListViewFont;
         private Button btnResetListViewFont;
+        private GroupBox grpFileOperations;
+        private Label lblConflictBehavior;
+        private ComboBox cmbConflictBehavior;
         private Button btnOK;
         private Button btnCancel;
     }

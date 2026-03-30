@@ -5,6 +5,9 @@ namespace win9xplorer
     /// </summary>
     internal static class ExplorerUtils
     {
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> FileTypeCache =
+            new(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>
         /// Formats file size in a human-readable format
         /// </summary>
@@ -34,7 +37,15 @@ namespace win9xplorer
         {
             if (string.IsNullOrEmpty(extension))
                 return "File";
-                
+
+            return FileTypeCache.GetOrAdd(extension, ResolveFileType);
+        }
+
+        private static string ResolveFileType(string extension)
+        {
+            if (string.IsNullOrEmpty(extension))
+                return "File";
+                 
             // Use Windows API to get the actual file type description
             WinApi.SHFILEINFO shfi = new WinApi.SHFILEINFO();
             uint flags = WinApi.SHGFI_TYPENAME | WinApi.SHGFI_USEFILEATTRIBUTES;
@@ -114,7 +125,7 @@ namespace win9xplorer
         /// <summary>
         /// Safely gets drive information
         /// </summary>
-        public static (string label, string totalSize, string freeSpace, string usedSpace, string fileSystem) GetDriveInfo(DriveInfo drive)
+        public static (string label, string totalSize, string freeSpace, string usedSpace, string fileSystem) GetDriveInfo(System.IO.DriveInfo drive)
         {
             string driveLabel = "";
             string totalSize = "";

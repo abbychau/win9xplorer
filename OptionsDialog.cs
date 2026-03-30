@@ -1,18 +1,25 @@
 using System;
+using System.ComponentModel;
 using System.Drawing;
 using System.Windows.Forms;
 
 namespace win9xplorer
 {
-    public partial class OptionsDialog : Form
+    internal partial class OptionsDialog : Form
     {
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Font TreeViewFont { get; set; }
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Font ListViewFont { get; set; }
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public FileConflictStrategy ConflictStrategy { get; set; }
         
         private Font originalTreeViewFont;
         private Font originalListViewFont;
         
-        public OptionsDialog(Font currentTreeViewFont, Font currentListViewFont)
+        public OptionsDialog(Font currentTreeViewFont, Font currentListViewFont, FileConflictStrategy conflictStrategy)
         {
             InitializeComponent();
             
@@ -23,12 +30,34 @@ namespace win9xplorer
             // Set current fonts
             TreeViewFont = new Font(currentTreeViewFont, currentTreeViewFont.Style);
             ListViewFont = new Font(currentListViewFont, currentListViewFont.Style);
+            ConflictStrategy = conflictStrategy;
+
+            InitializeConflictBehaviorOptions();
             
             // Update preview labels
             UpdateFontPreviews();
             
             // Set classic Windows style
             SetClassicWindowsStyle();
+        }
+
+        private void InitializeConflictBehaviorOptions()
+        {
+            cmbConflictBehavior.Items.Clear();
+            cmbConflictBehavior.Items.Add(new ConflictStrategyOption("Ask every time", FileConflictStrategy.AskUser));
+            cmbConflictBehavior.Items.Add(new ConflictStrategyOption("Overwrite existing", FileConflictStrategy.OverwriteExisting));
+            cmbConflictBehavior.Items.Add(new ConflictStrategyOption("Skip existing", FileConflictStrategy.SkipExisting));
+
+            for (int i = 0; i < cmbConflictBehavior.Items.Count; i++)
+            {
+                if (cmbConflictBehavior.Items[i] is ConflictStrategyOption option && option.Strategy == ConflictStrategy)
+                {
+                    cmbConflictBehavior.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            cmbConflictBehavior.SelectedIndex = 0;
         }
         
         private void SetClassicWindowsStyle()
@@ -100,6 +129,11 @@ namespace win9xplorer
         
         private void BtnOK_Click(object sender, EventArgs e)
         {
+            if (cmbConflictBehavior.SelectedItem is ConflictStrategyOption option)
+            {
+                ConflictStrategy = option.Strategy;
+            }
+
             this.DialogResult = DialogResult.OK;
             this.Close();
         }
@@ -120,10 +154,28 @@ namespace win9xplorer
         {
             if (disposing)
             {
+                components?.Dispose();
                 TreeViewFont?.Dispose();
                 ListViewFont?.Dispose();
             }
             base.Dispose(disposing);
+        }
+
+        private sealed class ConflictStrategyOption
+        {
+            public string DisplayText { get; }
+            public FileConflictStrategy Strategy { get; }
+
+            public ConflictStrategyOption(string displayText, FileConflictStrategy strategy)
+            {
+                DisplayText = displayText;
+                Strategy = strategy;
+            }
+
+            public override string ToString()
+            {
+                return DisplayText;
+            }
         }
     }
 }

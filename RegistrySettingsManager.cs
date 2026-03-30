@@ -15,6 +15,7 @@ namespace win9xplorer
         private const string WINDOW_KEY = "Window";
         private const string TOOLSTRIP_KEY = "ToolStrip";
         private const string FONTS_KEY = "Fonts";
+        private const string FILE_OPERATIONS_KEY = "FileOperations";
 
         public class WindowSettings
         {
@@ -40,6 +41,11 @@ namespace win9xplorer
         {
             public Font TreeViewFont { get; set; } = SystemFonts.DefaultFont;
             public Font ListViewFont { get; set; } = SystemFonts.DefaultFont;
+        }
+
+        public class FileOperationSettings
+        {
+            public FileConflictStrategy ConflictStrategy { get; set; } = FileConflictStrategy.AskUser;
         }
 
         /// <summary>
@@ -84,7 +90,7 @@ namespace win9xplorer
             
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{WINDOW_KEY}"))
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{WINDOW_KEY}"))
                 {
                     if (key != null)
                     {
@@ -150,7 +156,7 @@ namespace win9xplorer
             
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{TOOLSTRIP_KEY}"))
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{TOOLSTRIP_KEY}"))
                 {
                     if (key != null)
                     {
@@ -218,7 +224,7 @@ namespace win9xplorer
             
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{FONTS_KEY}"))
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{FONTS_KEY}"))
                 {
                     if (key != null)
                     {
@@ -253,6 +259,50 @@ namespace win9xplorer
                 Debug.WriteLine($"Error loading font settings: {ex.Message}");
             }
             
+            return settings;
+        }
+
+        public void SaveFileOperationSettings(FileConflictStrategy conflictStrategy)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey($@"{REGISTRY_PATH}\{FILE_OPERATIONS_KEY}"))
+                {
+                    key.SetValue("ConflictStrategy", (int)conflictStrategy);
+                    Debug.WriteLine($"File operation settings saved: {conflictStrategy}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error saving file operation settings: {ex.Message}");
+            }
+        }
+
+        public FileOperationSettings LoadFileOperationSettings()
+        {
+            var settings = new FileOperationSettings();
+
+            try
+            {
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{FILE_OPERATIONS_KEY}"))
+                {
+                    if (key != null)
+                    {
+                        int strategyValue = (int)(key.GetValue("ConflictStrategy") ?? (int)FileConflictStrategy.AskUser);
+                        if (Enum.IsDefined(typeof(FileConflictStrategy), strategyValue))
+                        {
+                            settings.ConflictStrategy = (FileConflictStrategy)strategyValue;
+                        }
+
+                        Debug.WriteLine($"File operation settings loaded: {settings.ConflictStrategy}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error loading file operation settings: {ex.Message}");
+            }
+
             return settings;
         }
 
@@ -301,7 +351,7 @@ namespace win9xplorer
             
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{BOOKMARKS_KEY}"))
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey($@"{REGISTRY_PATH}\{BOOKMARKS_KEY}"))
                 {
                     if (key != null)
                     {
@@ -309,7 +359,7 @@ namespace win9xplorer
                         
                         foreach (string keyName in bookmarkKeys.OrderBy(k => k))
                         {
-                            using (RegistryKey bookmarkKey = key.OpenSubKey(keyName))
+                            using (RegistryKey? bookmarkKey = key.OpenSubKey(keyName))
                             {
                                 if (bookmarkKey != null)
                                 {
@@ -346,7 +396,7 @@ namespace win9xplorer
             try
             {
                 // Validate screen bounds before applying position
-                Rectangle screenBounds = Screen.PrimaryScreen.WorkingArea;
+                Rectangle screenBounds = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(form).WorkingArea;
                 
                 // Ensure the window is at least partially visible
                 Point location = settings.Location;

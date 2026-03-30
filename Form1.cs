@@ -5,16 +5,26 @@ namespace win9xplorer
 {
     public partial class Form1 : Form
     {
+        private const string InternalDragFormat = "win9xplorer/InternalDrag";
         private readonly NavigationManager navigationManager;
         private readonly FileSystemManager fileSystemManager;
         private readonly IconManager iconManager;
         private readonly ContextMenuManager contextMenuManager;
+        private readonly FileOperationsService fileOperationsService;
         private readonly BookmarkManager bookmarkManager;
         private readonly AddressBarSuggestionManager suggestionManager;
         private readonly RegistrySettingsManager registryManager;
         private System.Windows.Forms.Timer? resizeTimer;
         private System.Windows.Forms.Timer? splitterTimer;
         private System.Windows.Forms.Timer? toolStripTimer;
+        private CancellationTokenSource? directoryLoadCts;
+        private FileConflictStrategy fileConflictStrategy = FileConflictStrategy.AskUser;
+        private ListViewItem? currentDropTargetItem;
+        private Color currentDropTargetOriginalBackColor = Color.Empty;
+        private Color currentDropTargetOriginalForeColor = Color.Empty;
+        private TreeNode? currentTreeDropTargetNode;
+        private Color currentTreeDropTargetOriginalBackColor = Color.Empty;
+        private Color currentTreeDropTargetOriginalForeColor = Color.Empty;
         
         public Form1()
         {
@@ -24,7 +34,8 @@ namespace win9xplorer
             iconManager = new IconManager(imageListSmall, imageListLarge);
             fileSystemManager = new FileSystemManager(iconManager);
             navigationManager = new NavigationManager();
-            contextMenuManager = new ContextMenuManager();
+            fileOperationsService = new FileOperationsService();
+            contextMenuManager = new ContextMenuManager(fileOperationsService);
             bookmarkManager = new BookmarkManager();
             suggestionManager = new AddressBarSuggestionManager();
             registryManager = new RegistrySettingsManager();
@@ -34,6 +45,7 @@ namespace win9xplorer
             
             SetupImageLists();
             SetupContextMenu();
+            SetupDragAndDrop();
             SetupMenuBar();
             SetClassicWindowsStyle();
             SetupToolStripEvents();
@@ -99,6 +111,10 @@ namespace win9xplorer
                 // Load and apply font settings
                 var fontSettings = registryManager.LoadFontSettings();
                 registryManager.ApplyFontSettings(treeView, listView, fontSettings);
+
+                // Load file operation settings
+                var fileOperationSettings = registryManager.LoadFileOperationSettings();
+                fileConflictStrategy = fileOperationSettings.ConflictStrategy;
                 
                 // Update view button states based on loaded settings
                 UpdateViewButtonStates();
@@ -161,6 +177,9 @@ namespace win9xplorer
                 
                 // Save font settings
                 registryManager.SaveFontSettings(treeView.Font, listView.Font);
+
+                // Save file operation settings
+                registryManager.SaveFileOperationSettings(fileConflictStrategy);
                 
                 // Bookmarks are saved automatically by BookmarkManager
                 
@@ -169,6 +188,63 @@ namespace win9xplorer
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error saving application settings: {ex.Message}");
+            }
+        }
+
+        private CancellationToken BeginDirectoryLoad()
+        {
+            directoryLoadCts?.Cancel();
+            directoryLoadCts?.Dispose();
+            directoryLoadCts = new CancellationTokenSource();
+            return directoryLoadCts.Token;
+        }
+
+        private async Task<bool> LoadDirectoryContentsAsync(string path)
+        {
+            var cancellationToken = BeginDirectoryLoad();
+
+            try
+            {
+                var entries = await fileSystemManager.GetDirectoryEntriesAsync(path, cancellationToken);
+                if (cancellationToken.IsCancellationRequested)
+                    return false;
+
+                listView.BeginUpdate();
+                listView.Items.Clear();
+
+                foreach (var entry in entries)
+                {
+                    var item = new ListViewItem(entry.Name)
+                    {
+                        ImageKey = iconManager.GetIconKey(entry.FullPath, entry.IsDirectory),
+                        Tag = entry.FullPath
+                    };
+
+                    item.SubItems.Add(entry.SizeText);
+                    item.SubItems.Add(entry.TypeText);
+                    item.SubItems.Add(entry.ModifiedText);
+                    listView.Items.Add(item);
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                Debug.WriteLine($"Directory load cancelled: {path}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading directory contents: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+            finally
+            {
+                if (listView.IsHandleCreated)
+                {
+                    listView.EndUpdate();
+                }
             }
         }
 
@@ -332,7 +408,7 @@ namespace win9xplorer
             listView.BackColor = Color.White;
             
             // Set the form icon
-            this.Icon = iconManager.CreateApplicationIcon();
+            this.Icon = iconManager.LoadApplicationIcon();
             
             // Make sure the split container has the classic look
             splitContainer.BackColor = SystemColors.Control;
@@ -429,11 +505,13 @@ namespace win9xplorer
 
             // Setup Tools menu
             var optionsMenuItem = new ToolStripMenuItem("&Options...", null, (s, e) => ShowOptions());
+            var taskbarMenuItem = new ToolStripMenuItem("Show &Taskbar (9x/ME)", null, (s, e) => ShowRetroTaskbar());
             var exportSettingsMenuItem = new ToolStripMenuItem("&Export Settings...", null, (s, e) => ExportSettings());
             var importSettingsMenuItem = new ToolStripMenuItem("&Import Settings...", null, (s, e) => ImportSettings());
             var resetSettingsMenuItem = new ToolStripMenuItem("&Reset All Settings...", null, (s, e) => ResetAllSettings());
             toolsMenu.DropDownItems.AddRange(new ToolStripItem[] {
                 optionsMenuItem,
+                taskbarMenuItem,
                 new ToolStripSeparator(),
                 exportSettingsMenuItem,
                 importSettingsMenuItem,
@@ -442,7 +520,7 @@ namespace win9xplorer
             });
 
             // Setup Help menu
-            var aboutMenuItem = new ToolStripMenuItem("&About Windows Explorer", null, (s, e) => ShowAbout());
+            var aboutMenuItem = new ToolStripMenuItem("&About File Explorer", null, (s, e) => ShowAbout());
             var testIconsMenuItem = new ToolStripMenuItem("&Test Windows XP Icons", null, (s, e) => iconManager.TestWindowsXPIconLoading());
             var refreshIconsMenuItem = new ToolStripMenuItem("&Refresh Toolbar Icons", null, (s, e) => RefreshToolbarIcons());
             
@@ -460,13 +538,30 @@ namespace win9xplorer
             contextMenuManager.SetupTreeViewContextMenu(treeView);
             contextMenuManager.SetupRenameCallback(StartRenameSelectedItem);
             contextMenuManager.SetupDeleteCallback(DeleteSelectedItems);
+            contextMenuManager.SetupOperationStatusCallback(SetOperationStatus);
             
             // Add mouse event handlers - MouseDown for cancellation, MouseUp for showing menu
             listView.MouseDown += ListView_MouseDown;
             listView.MouseUp += ListView_MouseUp;
         }
 
-        private void ListView_MouseDown(object sender, MouseEventArgs e)
+        private void SetupDragAndDrop()
+        {
+            listView.AllowDrop = true;
+            listView.ItemDrag += ListView_ItemDrag;
+            listView.DragEnter += ListView_DragEnter;
+            listView.DragOver += ListView_DragOver;
+            listView.DragLeave += ListView_DragLeave;
+            listView.DragDrop += ListView_DragDrop;
+
+            treeView.AllowDrop = true;
+            treeView.DragEnter += TreeView_DragEnter;
+            treeView.DragOver += TreeView_DragOver;
+            treeView.DragLeave += TreeView_DragLeave;
+            treeView.DragDrop += TreeView_DragDrop;
+        }
+
+        private void ListView_MouseDown(object? sender, MouseEventArgs e)
         {
             Debug.WriteLine($"ListView_MouseDown called - Button: {e.Button}, Location: {e.Location}");
             
@@ -475,6 +570,471 @@ namespace win9xplorer
             {
                 contextMenuManager.OnListViewMouseDown(e);
             }
+        }
+
+        private void ListView_ItemDrag(object? sender, ItemDragEventArgs e)
+        {
+            if (string.IsNullOrEmpty(navigationManager.CurrentPath) || listView.SelectedItems.Count == 0)
+            {
+                return;
+            }
+
+            var selectedPaths = new List<string>();
+            foreach (ListViewItem item in listView.SelectedItems)
+            {
+                string itemPath = item.Tag?.ToString() ?? string.Empty;
+                if (!string.IsNullOrEmpty(itemPath))
+                {
+                    selectedPaths.Add(itemPath);
+                }
+            }
+
+            if (selectedPaths.Count == 0)
+            {
+                return;
+            }
+
+            var files = new System.Collections.Specialized.StringCollection();
+            files.AddRange(selectedPaths.ToArray());
+
+            var dataObject = new DataObject();
+            dataObject.SetFileDropList(files);
+            dataObject.SetData(InternalDragFormat, true);
+
+            listView.DoDragDrop(dataObject, DragDropEffects.Copy | DragDropEffects.Move);
+        }
+
+        private void ListView_DragEnter(object? sender, DragEventArgs e)
+        {
+            e.Effect = GetDropEffect(e);
+            UpdateDropTargetHighlight(e);
+        }
+
+        private void ListView_DragOver(object? sender, DragEventArgs e)
+        {
+            e.Effect = GetDropEffect(e);
+            UpdateDropTargetHighlight(e);
+        }
+
+        private void ListView_DragLeave(object? sender, EventArgs e)
+        {
+            ClearDropTargetHighlight();
+        }
+
+        private void TreeView_DragEnter(object? sender, DragEventArgs e)
+        {
+            e.Effect = GetTreeDropEffect(e);
+            UpdateTreeDropTargetHighlight(e);
+        }
+
+        private void TreeView_DragOver(object? sender, DragEventArgs e)
+        {
+            e.Effect = GetTreeDropEffect(e);
+            UpdateTreeDropTargetHighlight(e);
+        }
+
+        private void TreeView_DragLeave(object? sender, EventArgs e)
+        {
+            ClearTreeDropTargetHighlight();
+        }
+
+        private async void TreeView_DragDrop(object? sender, DragEventArgs e)
+        {
+            try
+            {
+                if (e.Data is null)
+                {
+                    return;
+                }
+
+                string? targetDirectory = ResolveTreeDropTargetDirectory(e);
+                if (string.IsNullOrEmpty(targetDirectory))
+                {
+                    return;
+                }
+
+                var sourcePaths = GetDraggedFilePaths(e.Data);
+                if (sourcePaths.Count == 0)
+                {
+                    return;
+                }
+
+                bool isMove = e.Effect == DragDropEffects.Move;
+                SetOperationStatus(isMove ? "Moving dropped items..." : "Copying dropped items...", true);
+
+                FileOperationResult operationResult;
+                try
+                {
+                    operationResult = await fileOperationsService.PasteToDirectoryAsync(
+                        sourcePaths,
+                        targetDirectory,
+                        isMove,
+                        fileConflictStrategy);
+                }
+                finally
+                {
+                    RestoreStatusText();
+                }
+
+                if (operationResult.IsCanceled)
+                {
+                    MessageBox.Show("Drag-and-drop operation was canceled.", "Operation Canceled",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (operationResult.SuccessCount > 0)
+                {
+                    if (!string.IsNullOrEmpty(navigationManager.CurrentPath)
+                        && navigationManager.CurrentPath.Equals(targetDirectory, StringComparison.OrdinalIgnoreCase))
+                    {
+                        BtnRefresh_Click(this, EventArgs.Empty);
+                    }
+                }
+
+                if (operationResult.Errors.Count > 0)
+                {
+                    ShowDragDropErrors(operationResult.Errors);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during drag-and-drop: {ex.Message}", "Drag-and-Drop Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                ClearTreeDropTargetHighlight();
+            }
+        }
+
+        private async void ListView_DragDrop(object? sender, DragEventArgs e)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(navigationManager.CurrentPath))
+                {
+                    return;
+                }
+
+                if (e.Data is null)
+                {
+                    return;
+                }
+
+                var sourcePaths = GetDraggedFilePaths(e.Data);
+                if (sourcePaths.Count == 0)
+                {
+                    return;
+                }
+
+                string? targetDirectory = ResolveDropTargetDirectory(e);
+                if (string.IsNullOrEmpty(targetDirectory))
+                {
+                    return;
+                }
+
+                bool isMove = e.Effect == DragDropEffects.Move;
+                SetOperationStatus(isMove ? "Moving dropped items..." : "Copying dropped items...", true);
+
+                FileOperationResult operationResult;
+                try
+                {
+                    operationResult = await fileOperationsService.PasteToDirectoryAsync(
+                        sourcePaths,
+                        targetDirectory,
+                        isMove,
+                        fileConflictStrategy);
+                }
+                finally
+                {
+                    RestoreStatusText();
+                }
+
+                if (operationResult.IsCanceled)
+                {
+                    MessageBox.Show("Drag-and-drop operation was canceled.", "Operation Canceled",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (operationResult.SuccessCount > 0)
+                {
+                    BtnRefresh_Click(this, EventArgs.Empty);
+                }
+
+                if (operationResult.Errors.Count > 0)
+                {
+                    ShowDragDropErrors(operationResult.Errors);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during drag-and-drop: {ex.Message}", "Drag-and-Drop Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                ClearDropTargetHighlight();
+            }
+        }
+
+        private DragDropEffects GetDropEffect(DragEventArgs e)
+        {
+            if (string.IsNullOrEmpty(navigationManager.CurrentPath) || e.Data is null || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                return DragDropEffects.None;
+            }
+
+            string? targetDirectory = ResolveDropTargetDirectory(e);
+            if (string.IsNullOrEmpty(targetDirectory))
+            {
+                return DragDropEffects.None;
+            }
+
+            if ((e.KeyState & 8) == 8)
+            {
+                return DragDropEffects.Copy;
+            }
+
+            if ((e.KeyState & 4) == 4)
+            {
+                return DragDropEffects.Move;
+            }
+
+            var draggedPaths = GetDraggedFilePaths(e.Data);
+            if (draggedPaths.Count == 0)
+            {
+                return DragDropEffects.None;
+            }
+
+            return ShouldDefaultToMove(draggedPaths, targetDirectory)
+                ? DragDropEffects.Move
+                : DragDropEffects.Copy;
+        }
+
+        private DragDropEffects GetTreeDropEffect(DragEventArgs e)
+        {
+            if (e.Data is null || !e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                return DragDropEffects.None;
+            }
+
+            string? targetDirectory = ResolveTreeDropTargetDirectory(e);
+            if (string.IsNullOrEmpty(targetDirectory))
+            {
+                return DragDropEffects.None;
+            }
+
+            if ((e.KeyState & 8) == 8)
+            {
+                return DragDropEffects.Copy;
+            }
+
+            if ((e.KeyState & 4) == 4)
+            {
+                return DragDropEffects.Move;
+            }
+
+            var draggedPaths = GetDraggedFilePaths(e.Data);
+            if (draggedPaths.Count == 0)
+            {
+                return DragDropEffects.None;
+            }
+
+            return ShouldDefaultToMove(draggedPaths, targetDirectory)
+                ? DragDropEffects.Move
+                : DragDropEffects.Copy;
+        }
+
+        private string? ResolveDropTargetDirectory(DragEventArgs e)
+        {
+            if (string.IsNullOrEmpty(navigationManager.CurrentPath))
+            {
+                return null;
+            }
+
+            ListViewItem? directoryItem = GetDirectoryItemAtPoint(e);
+            if (directoryItem?.Tag?.ToString() is string itemPath && Directory.Exists(itemPath))
+            {
+                return itemPath;
+            }
+
+            return navigationManager.CurrentPath;
+        }
+
+        private string? ResolveTreeDropTargetDirectory(DragEventArgs e)
+        {
+            TreeNode? node = GetTreeNodeAtPoint(e);
+            if (node?.Tag?.ToString() is string nodePath && Directory.Exists(nodePath))
+            {
+                return nodePath;
+            }
+
+            return null;
+        }
+
+        private ListViewItem? GetDirectoryItemAtPoint(DragEventArgs e)
+        {
+            Point clientPoint = listView.PointToClient(new Point(e.X, e.Y));
+            ListViewHitTestInfo hitTest = listView.HitTest(clientPoint);
+            if (hitTest.Item?.Tag?.ToString() is string itemPath && Directory.Exists(itemPath))
+            {
+                return hitTest.Item;
+            }
+
+            return null;
+        }
+
+        private TreeNode? GetTreeNodeAtPoint(DragEventArgs e)
+        {
+            Point clientPoint = treeView.PointToClient(new Point(e.X, e.Y));
+            return treeView.GetNodeAt(clientPoint);
+        }
+
+        private void UpdateDropTargetHighlight(DragEventArgs e)
+        {
+            if (e.Effect == DragDropEffects.None)
+            {
+                ClearDropTargetHighlight();
+                return;
+            }
+
+            ListViewItem? newTarget = GetDirectoryItemAtPoint(e);
+            if (ReferenceEquals(currentDropTargetItem, newTarget))
+            {
+                return;
+            }
+
+            ClearDropTargetHighlight();
+            if (newTarget == null)
+            {
+                return;
+            }
+
+            currentDropTargetItem = newTarget;
+            currentDropTargetOriginalBackColor = newTarget.BackColor;
+            currentDropTargetOriginalForeColor = newTarget.ForeColor;
+            newTarget.BackColor = SystemColors.Highlight;
+            newTarget.ForeColor = SystemColors.HighlightText;
+        }
+
+        private void ClearDropTargetHighlight()
+        {
+            if (currentDropTargetItem == null)
+            {
+                return;
+            }
+
+            currentDropTargetItem.BackColor = currentDropTargetOriginalBackColor;
+            currentDropTargetItem.ForeColor = currentDropTargetOriginalForeColor;
+            currentDropTargetItem = null;
+        }
+
+        private void UpdateTreeDropTargetHighlight(DragEventArgs e)
+        {
+            if (e.Effect == DragDropEffects.None)
+            {
+                ClearTreeDropTargetHighlight();
+                return;
+            }
+
+            TreeNode? newTarget = GetTreeNodeAtPoint(e);
+            if (newTarget?.Tag?.ToString() is not string nodePath || !Directory.Exists(nodePath))
+            {
+                newTarget = null;
+            }
+
+            if (ReferenceEquals(currentTreeDropTargetNode, newTarget))
+            {
+                return;
+            }
+
+            ClearTreeDropTargetHighlight();
+            if (newTarget == null)
+            {
+                return;
+            }
+
+            currentTreeDropTargetNode = newTarget;
+            currentTreeDropTargetOriginalBackColor = newTarget.BackColor;
+            currentTreeDropTargetOriginalForeColor = newTarget.ForeColor;
+            newTarget.BackColor = SystemColors.Highlight;
+            newTarget.ForeColor = SystemColors.HighlightText;
+        }
+
+        private void ClearTreeDropTargetHighlight()
+        {
+            if (currentTreeDropTargetNode == null)
+            {
+                return;
+            }
+
+            currentTreeDropTargetNode.BackColor = currentTreeDropTargetOriginalBackColor;
+            currentTreeDropTargetNode.ForeColor = currentTreeDropTargetOriginalForeColor;
+            currentTreeDropTargetNode = null;
+        }
+
+        private static List<string> GetDraggedFilePaths(IDataObject dataObject)
+        {
+            if (!dataObject.GetDataPresent(DataFormats.FileDrop))
+            {
+                return new List<string>();
+            }
+
+            if (dataObject.GetData(DataFormats.FileDrop) is not string[] droppedPaths)
+            {
+                return new List<string>();
+            }
+
+            return droppedPaths.Where(path => !string.IsNullOrWhiteSpace(path)).ToList();
+        }
+
+        private static bool ShouldDefaultToMove(IEnumerable<string> sourcePaths, string targetDirectory)
+        {
+            string targetRoot = Path.GetPathRoot(targetDirectory) ?? string.Empty;
+            if (string.IsNullOrEmpty(targetRoot))
+            {
+                return false;
+            }
+
+            foreach (string sourcePath in sourcePaths)
+            {
+                string sourceRoot = Path.GetPathRoot(sourcePath) ?? string.Empty;
+                if (!sourceRoot.Equals(targetRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void ShowDragDropErrors(List<string> errors)
+        {
+            var significantErrors = errors
+                .Where(error => !IsIgnorableDragDropError(error))
+                .ToList();
+
+            if (significantErrors.Count == 0)
+            {
+                return;
+            }
+
+            string errorMessage = string.Join("\n", significantErrors.Take(5));
+            if (significantErrors.Count > 5)
+            {
+                errorMessage += $"\n... and {significantErrors.Count - 5} more errors";
+            }
+
+            MessageBox.Show($"Some dropped items failed.\n\n{errorMessage}",
+                "Drag-and-Drop Errors", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private static bool IsIgnorableDragDropError(string error)
+        {
+            return error.Contains("target directory is under source directory", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("Source and destination are the same", StringComparison.OrdinalIgnoreCase);
         }
 
         // Menu event handlers
@@ -512,13 +1072,8 @@ namespace win9xplorer
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                
-                // Create a StringCollection with file paths
-                var files = new System.Collections.Specialized.StringCollection();
-                files.AddRange(selectedPaths.ToArray());
-                
-                // Copy to clipboard
-                Clipboard.SetFileDropList(files);
+
+                fileOperationsService.CopyToClipboard(selectedPaths);
                 
                 MessageBox.Show($"Copied {selectedPaths.Count} item(s) to clipboard.", "Copy", 
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -550,20 +1105,8 @@ namespace win9xplorer
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
-                
-                // Create a StringCollection with file paths
-                var files = new System.Collections.Specialized.StringCollection();
-                files.AddRange(selectedPaths.ToArray());
-                
-                // Copy to clipboard with cut format
-                var dataObject = new DataObject();
-                dataObject.SetFileDropList(files);
-                
-                // Add a special format to indicate cut (not copy)
-                byte[] moveEffect = BitConverter.GetBytes(2); // DROPEFFECT_MOVE
-                dataObject.SetData("Preferred DropEffect", moveEffect);
-                
-                Clipboard.SetDataObject(dataObject, true);
+
+                fileOperationsService.CutToClipboard(selectedPaths);
                 
                 MessageBox.Show($"Cut {selectedPaths.Count} item(s) to clipboard.", "Cut", 
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -575,19 +1118,11 @@ namespace win9xplorer
             }
         }
 
-        private void PasteItems()
+        private async void PasteItems()
         {
             try
             {
-                if (!Clipboard.ContainsFileDropList())
-                {
-                    MessageBox.Show("No files in clipboard to paste.", "Paste", 
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-                
-                var files = Clipboard.GetFileDropList();
-                if (files.Count == 0)
+                if (!fileOperationsService.TryGetClipboardFileDrop(out var files, out bool isCutOperation))
                 {
                     MessageBox.Show("No files in clipboard to paste.", "Paste", 
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -602,22 +1137,6 @@ namespace win9xplorer
                     return;
                 }
                 
-                // Check if this is a cut operation
-                bool isCutOperation = false;
-                try
-                {
-                    var dataObject = Clipboard.GetDataObject();
-                    if (dataObject?.GetDataPresent("Preferred DropEffect") == true)
-                    {
-                        var dropEffect = (byte[])dataObject.GetData("Preferred DropEffect");
-                        isCutOperation = BitConverter.ToInt32(dropEffect, 0) == 2; // DROPEFFECT_MOVE
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error checking drop effect: {ex.Message}");
-                }
-                
                 string operation = isCutOperation ? "move" : "copy";
                 var result = MessageBox.Show($"Are you sure you want to {operation} {files.Count} item(s) to this location?", 
                     $"{(isCutOperation ? "Move" : "Copy")} Files", 
@@ -625,56 +1144,50 @@ namespace win9xplorer
                 
                 if (result == DialogResult.Yes)
                 {
-                    int successCount = 0;
-                    foreach (string file in files)
+                    SetOperationStatus($"{(isCutOperation ? "Moving" : "Copying")} items...", true);
+                    FileOperationResult operationResult;
+                    try
                     {
-                        try
-                        {
-                            string fileName = Path.GetFileName(file);
-                            string destPath = Path.Combine(targetDirectory, fileName);
-                            
-                            if (Directory.Exists(file))
-                            {
-                                // Handle directory
-                                if (isCutOperation)
-                                {
-                                    Directory.Move(file, destPath);
-                                }
-                                else
-                                {
-                                    CopyDirectory(file, destPath);
-                                }
-                            }
-                            else if (File.Exists(file))
-                            {
-                                // Handle file
-                                if (isCutOperation)
-                                {
-                                    File.Move(file, destPath);
-                                }
-                                else
-                                {
-                                    File.Copy(file, destPath, true);
-                                }
-                            }
-                            
-                            successCount++;
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show($"Error {operation}ing '{Path.GetFileName(file)}': {ex.Message}", 
-                                $"{(isCutOperation ? "Move" : "Copy")} Error", 
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        }
+                        operationResult = await fileOperationsService.PasteToDirectoryAsync(files, targetDirectory, isCutOperation, fileConflictStrategy);
                     }
-                    
-                    if (successCount > 0)
+                    finally
+                    {
+                        RestoreStatusText();
+                    }
+
+                    if (operationResult.IsCanceled)
+                    {
+                        MessageBox.Show($"{(isCutOperation ? "Move" : "Copy")} operation was canceled.",
+                            "Operation Canceled",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    if (operationResult.SuccessCount > 0)
                     {
                         // Refresh the current view
                         BtnRefresh_Click(this, EventArgs.Empty);
                         
-                        MessageBox.Show($"Successfully {operation}ed {successCount} item(s).", 
+                        MessageBox.Show($"Successfully {operation}ed {operationResult.SuccessCount} item(s).", 
                             $"{(isCutOperation ? "Move" : "Copy")} Complete", 
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+
+                    if (operationResult.Errors.Count > 0)
+                    {
+                        string errorMessage = string.Join("\n", operationResult.Errors.Take(5));
+                        if (operationResult.Errors.Count > 5)
+                            errorMessage += $"\n... and {operationResult.Errors.Count - 5} more errors";
+
+                        MessageBox.Show($"Some items failed to {operation}.\n\n{errorMessage}",
+                            $"{(isCutOperation ? "Move" : "Copy")} Errors",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+
+                    if (operationResult.SkippedCount > 0)
+                    {
+                        MessageBox.Show($"Skipped {operationResult.SkippedCount} existing item(s).",
+                            $"{(isCutOperation ? "Move" : "Copy")} Skipped",
                             MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
                 }
@@ -683,28 +1196,6 @@ namespace win9xplorer
             {
                 MessageBox.Show($"Error pasting items: {ex.Message}", "Paste Error", 
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        }
-
-        private void CopyDirectory(string sourceDir, string destDir)
-        {
-            // Create destination directory
-            Directory.CreateDirectory(destDir);
-            
-            // Copy files
-            foreach (string filePath in Directory.GetFiles(sourceDir))
-            {
-                string fileName = Path.GetFileName(filePath);
-                string destFile = Path.Combine(destDir, fileName);
-                File.Copy(filePath, destFile, true);
-            }
-            
-            // Copy subdirectories recursively
-            foreach (string dirPath in Directory.GetDirectories(sourceDir))
-            {  
-                string dirName = Path.GetFileName(dirPath);
-                string destSubDir = Path.Combine(destDir, dirName);
-                CopyDirectory(dirPath, destSubDir);
             }
         }
 
@@ -741,6 +1232,7 @@ namespace win9xplorer
         {
             splitContainer.Panel1Collapsed = !splitContainer.Panel1Collapsed;
             btnToggleTreeView.Checked = !splitContainer.Panel1Collapsed;
+            btnToggleTreeView.ToolTipText = splitContainer.Panel1Collapsed ? "Show Folder Tree" : "Hide Folder Tree";
             
             // Update the View menu item
             if (viewMenu.DropDownItems.Count > 2)
@@ -782,7 +1274,7 @@ namespace win9xplorer
         private void ShowOptions()
         {
             // Show options dialog
-            using (var optionsDialog = new OptionsDialog(treeView.Font, listView.Font))
+            using (var optionsDialog = new OptionsDialog(treeView.Font, listView.Font, fileConflictStrategy))
             {
                 if (optionsDialog.ShowDialog(this) == DialogResult.OK)
                 {
@@ -792,15 +1284,113 @@ namespace win9xplorer
                     
                     // Save font settings to registry
                     registryManager.SaveFontSettings(treeView.Font, listView.Font);
+                    fileConflictStrategy = optionsDialog.ConflictStrategy;
+                    registryManager.SaveFileOperationSettings(fileConflictStrategy);
                     
-                    Debug.WriteLine("Font settings applied and saved to registry");
+                    Debug.WriteLine($"Options saved. Conflict strategy: {fileConflictStrategy}");
                 }
             }
         }
 
         private void ShowAbout()
         {
-            MessageBox.Show($"Windows 9x Explorer Clone\n\nBuilt with .NET 8\nVersion 1.0", "About Windows Explorer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            const string projectUrl = "https://github.com/abbychau/win9xplorer";
+
+            using var aboutDialog = new Form
+            {
+                Text = "About File Explorer",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                ClientSize = new Size(360, 150),
+                Font = new Font("MS Sans Serif", 8.25f, FontStyle.Regular, GraphicsUnit.Point)
+            };
+
+            var titleLabel = new Label
+            {
+                AutoSize = true,
+                Left = 16,
+                Top = 16,
+                Text = "Windows 9x Explorer Clone"
+            };
+
+            var infoLabel = new Label
+            {
+                AutoSize = true,
+                Left = 16,
+                Top = 40,
+                Text = "Built with .NET 8\nVersion 1.0"
+            };
+
+            var linkLabel = new LinkLabel
+            {
+                AutoSize = true,
+                Left = 16,
+                Top = 82,
+                Text = projectUrl
+            };
+            linkLabel.LinkClicked += (_, _) =>
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = projectUrl,
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to open project URL: {ex.Message}");
+                }
+            };
+
+            var okButton = new Button
+            {
+                Text = "OK",
+                Width = 80,
+                Height = 24,
+                Left = 264,
+                Top = 112,
+                DialogResult = DialogResult.OK
+            };
+
+            aboutDialog.Controls.Add(titleLabel);
+            aboutDialog.Controls.Add(infoLabel);
+            aboutDialog.Controls.Add(linkLabel);
+            aboutDialog.Controls.Add(okButton);
+            aboutDialog.AcceptButton = okButton;
+
+            aboutDialog.ShowDialog(this);
+        }
+
+        public void OpenPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            {
+                return;
+            }
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => NavigateToPath(path)));
+                return;
+            }
+
+            NavigateToPath(path);
+        }
+
+        private void ShowRetroTaskbar()
+        {
+            var taskbar = RetroTaskbarForm.GetOrCreate();
+            if (!taskbar.Visible)
+            {
+                taskbar.Show();
+            }
+
+            taskbar.Activate();
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -828,6 +1418,10 @@ namespace win9xplorer
         {
             // Save all settings before closing
             SaveAllSettings();
+
+            directoryLoadCts?.Cancel();
+            directoryLoadCts?.Dispose();
+            directoryLoadCts = null;
             
             // Clean up suggestion manager
             suggestionManager.Dispose();
@@ -886,7 +1480,14 @@ namespace win9xplorer
 
         private void UpdateBookmarkButtonState()
         {
-            string currentPath = string.IsNullOrEmpty(navigationManager.CurrentPath) ? "My Computer" : navigationManager.CurrentPath;
+            string currentPath = GetPathForFavoritesAction();
+            if (string.IsNullOrEmpty(currentPath))
+            {
+                btnBookmark.Checked = false;
+                btnBookmark.ToolTipText = "Add to Favorites";
+                return;
+            }
+
             bool isBookmarked = bookmarkManager.IsBookmarked(currentPath);
             
             btnBookmark.Checked = isBookmarked;
@@ -895,7 +1496,13 @@ namespace win9xplorer
 
         private void BtnBookmark_Click(object sender, EventArgs e)
         {
-            string currentPath = string.IsNullOrEmpty(navigationManager.CurrentPath) ? "My Computer" : navigationManager.CurrentPath;
+            string currentPath = GetPathForFavoritesAction();
+            if (string.IsNullOrEmpty(currentPath))
+            {
+                MessageBox.Show("No folder is currently selected to add to Favorites.",
+                    "Favorites", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             
             if (bookmarkManager.IsBookmarked(currentPath))
             {
@@ -912,10 +1519,45 @@ namespace win9xplorer
 
         private void AddCurrentPathToBookmarks()
         {
-            string currentPath = string.IsNullOrEmpty(navigationManager.CurrentPath) ? "My Computer" : navigationManager.CurrentPath;
+            string currentPath = GetPathForFavoritesAction();
+            if (string.IsNullOrEmpty(currentPath))
+            {
+                MessageBox.Show("No folder is currently selected to add to Favorites.",
+                    "Add to Favorites", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            if (bookmarkManager.IsBookmarked(currentPath))
+            {
+                MessageBox.Show("This location is already in Favorites.",
+                    "Add to Favorites", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             bookmarkManager.AddBookmark(currentPath);
             UpdateBookmarkButtonState();
             RefreshFavoritesMenu();
+            MessageBox.Show("Added to Favorites.", "Favorites", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private string GetPathForFavoritesAction()
+        {
+            if (!string.IsNullOrEmpty(navigationManager.CurrentPath))
+            {
+                return navigationManager.CurrentPath;
+            }
+
+            if (txtAddress.Text == "My Computer")
+            {
+                if (listView.SelectedItems.Count == 1)
+                {
+                    return listView.SelectedItems[0].Tag?.ToString() ?? "My Computer";
+                }
+
+                return "My Computer";
+            }
+
+            return string.Empty;
         }
 
         private void RefreshFavoritesMenu()
@@ -987,7 +1629,7 @@ namespace win9xplorer
                 {
                     // Regular directory - use standard details view
                     fileSystemManager.SetupDetailsView(listView);
-                    fileSystemManager.LoadDirectoryContents(navigationManager.CurrentPath, listView);
+                    _ = LoadDirectoryContentsAsync(navigationManager.CurrentPath);
                 }
             }
             else
@@ -1035,13 +1677,42 @@ namespace win9xplorer
             RefreshFavoritesTreeView();
         }
 
-        private void TreeView_BeforeExpand(object sender, TreeViewCancelEventArgs e)
+        private async void TreeView_BeforeExpand(object sender, TreeViewCancelEventArgs e)
         {
             if (e.Node?.Tag?.ToString() == "computer" || e.Node?.Tag?.ToString() == "favorites")
                 return;
 
-            // Clear dummy nodes and load actual folders
-            fileSystemManager.ExpandTreeNode(e.Node!);
+            if (e.Node?.Tag?.ToString() is not string path || string.IsNullOrEmpty(path))
+                return;
+
+            try
+            {
+                using var cts = new CancellationTokenSource();
+                var directories = await fileSystemManager.GetTreeDirectoryInfosAsync(path, cts.Token);
+
+                e.Node.Nodes.Clear();
+                foreach (var directory in directories)
+                {
+                    var folderNode = new TreeNode(directory.Name)
+                    {
+                        ImageKey = "folder",
+                        SelectedImageKey = "folder",
+                        Tag = directory.FullPath
+                    };
+
+                    if (directory.HasChildren)
+                    {
+                        folderNode.Nodes.Add(new TreeNode("Loading..."));
+                    }
+
+                    e.Node.Nodes.Add(folderNode);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading folders: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void TreeView_AfterSelect(object sender, TreeViewEventArgs e)
@@ -1133,8 +1804,9 @@ namespace win9xplorer
             // Reset the flag after setting text
             suggestionManager.SetNavigatingProgrammatically(false);
 
+            View currentView = listView.View;
             listView.Clear();
-            listView.View = View.LargeIcon;
+            listView.View = currentView;
             
             // Add columns for details view
             if (listView.View == View.Details)
@@ -1182,10 +1854,15 @@ namespace win9xplorer
 
         private void NavigateToPath(string path)
         {
-            NavigateToPath(path, true);
+            _ = NavigateToPathAsync(path, true);
         }
 
         private void NavigateToPath(string path, bool syncTreeView)
+        {
+            _ = NavigateToPathAsync(path, syncTreeView);
+        }
+
+        private async Task NavigateToPathAsync(string path, bool syncTreeView)
         {
             try
             {
@@ -1207,8 +1884,11 @@ namespace win9xplorer
                 {
                     fileSystemManager.SetupDetailsView(listView);
                 }
-                
-                fileSystemManager.LoadDirectoryContents(path, listView);
+
+                if (!await LoadDirectoryContentsAsync(path))
+                {
+                    return;
+                }
                 
                 // Add to navigation history
                 navigationManager.AddToHistory(path);
@@ -1291,7 +1971,7 @@ namespace win9xplorer
             }
         }
 
-        private void DeleteSelectedItems()
+        private async void DeleteSelectedItems()
         {
             try
             {
@@ -1339,77 +2019,57 @@ namespace win9xplorer
 
                 // Show confirmation dialog
                 string message = selectedPaths.Count == 1 
-                    ? $"Are you sure you want to delete '{Path.GetFileName(selectedPaths[0])}'?"
-                    : $"Are you sure you want to delete these {selectedPaths.Count} items?";
+                    ? $"Move '{Path.GetFileName(selectedPaths[0])}' to the Recycle Bin?"
+                    : $"Move these {selectedPaths.Count} items to the Recycle Bin?";
                 
                 var result = MessageBox.Show(message, "Delete Files", 
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 
                 if (result == DialogResult.Yes)
                 {
-                    int successCount = 0;
-                    var errors = new List<string>();
-                    
-                    foreach (string filePath in selectedPaths)
+                    SetOperationStatus("Moving items to Recycle Bin...", true);
+                    FileOperationResult deleteResult;
+                    try
                     {
-                        try
-                        {
-                            if (Directory.Exists(filePath))
-                            {
-                                Directory.Delete(filePath, true); // Recursive delete for directories
-                                successCount++;
-                                Debug.WriteLine($"Deleted directory: {filePath}");
-                            }
-                            else if (File.Exists(filePath))
-                            {
-                                File.Delete(filePath);
-                                successCount++;
-                                Debug.WriteLine($"Deleted file: {filePath}");
-                            }
-                        }
-                        catch (UnauthorizedAccessException)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': Access denied");
-                        }
-                        catch (DirectoryNotFoundException)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': Path not found");
-                        }
-                        catch (IOException ex)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': {ex.Message}");
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': {ex.Message}");
-                        }
+                        deleteResult = await fileOperationsService.DeletePathsAsync(selectedPaths);
+                    }
+                    finally
+                    {
+                        RestoreStatusText();
+                    }
+
+                    if (deleteResult.IsCanceled)
+                    {
+                        MessageBox.Show("Delete operation was canceled.", "Operation Canceled",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
                     }
                     
                     // Refresh the current view to reflect deletions
                     BtnRefresh_Click(this, EventArgs.Empty);
                     
                     // Show results
-                    if (errors.Count == 0)
+                    if (deleteResult.Errors.Count == 0)
                     {
-                        Debug.WriteLine($"Successfully deleted {successCount} items");
+                        Debug.WriteLine($"Successfully deleted {deleteResult.SuccessCount} items");
                     }
-                    else if (successCount > 0)
+                    else if (deleteResult.SuccessCount > 0)
                     {
-                        string errorMessage = $"Successfully deleted {successCount} items.\n\nErrors:\n" + 
-                                            string.Join("\n", errors.Take(5));
-                        if (errors.Count > 5)
-                            errorMessage += $"\n... and {errors.Count - 5} more errors";
-                            
+                        string errorMessage = $"Successfully deleted {deleteResult.SuccessCount} items.\n\nErrors:\n" + 
+                                            string.Join("\n", deleteResult.Errors.Take(5));
+                        if (deleteResult.Errors.Count > 5)
+                            errorMessage += $"\n... and {deleteResult.Errors.Count - 5} more errors";
+                             
                         MessageBox.Show(errorMessage, "Delete Partial Success", 
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                     else
                     {
                         string errorMessage = "Failed to delete items:\n" + 
-                                            string.Join("\n", errors.Take(5));
-                        if (errors.Count > 5)
-                            errorMessage += $"\n... and {errors.Count - 5} more errors";
-                            
+                                            string.Join("\n", deleteResult.Errors.Take(5));
+                        if (deleteResult.Errors.Count > 5)
+                            errorMessage += $"\n... and {deleteResult.Errors.Count - 5} more errors";
+                             
                         MessageBox.Show(errorMessage, "Delete Error", 
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
@@ -1425,6 +2085,20 @@ namespace win9xplorer
 
         private void BtnNavigateToFolder_Click(object sender, EventArgs e)
         {
+            EnsureTreeViewVisible();
+
+            if (txtAddress.Text == "My Computer")
+            {
+                SelectTreeRootNode("computer");
+                return;
+            }
+
+            if (txtAddress.Text == "Favorites")
+            {
+                SelectTreeRootNode("favorites");
+                return;
+            }
+
             if (string.IsNullOrEmpty(navigationManager.CurrentPath))
             {
                 MessageBox.Show("No folder is currently selected to navigate to in the tree.", 
@@ -1437,6 +2111,27 @@ namespace win9xplorer
             
             // Expand the tree to show the current folder
             ExpandTreeToPath(navigationManager.CurrentPath);
+        }
+
+        private void EnsureTreeViewVisible()
+        {
+            if (splitContainer.Panel1Collapsed)
+            {
+                ToggleTreeView();
+            }
+        }
+
+        private void SelectTreeRootNode(string rootTag)
+        {
+            foreach (TreeNode node in treeView.Nodes)
+            {
+                if (string.Equals(node.Tag?.ToString(), rootTag, StringComparison.OrdinalIgnoreCase))
+                {
+                    treeView.SelectedNode = node;
+                    node.EnsureVisible();
+                    break;
+                }
+            }
         }
 
         private void ExpandTreeToPath(string targetPath)
@@ -1824,7 +2519,7 @@ namespace win9xplorer
             }
         }
         
-        private void BtnBack_Click(object sender, EventArgs e)
+        private async void BtnBack_Click(object sender, EventArgs e)
         {
             var path = navigationManager.GoBack();
             if (path != null)
@@ -1836,7 +2531,10 @@ namespace win9xplorer
                 
                 suggestionManager.SetNavigatingProgrammatically(false);
                 
-                fileSystemManager.LoadDirectoryContents(path, listView);
+                if (!await LoadDirectoryContentsAsync(path))
+                {
+                    return;
+                }
                 UpdateNavigationButtons();
                 UpdateStatusBar();
                 UpdateWindowTitle();
@@ -1845,7 +2543,7 @@ namespace win9xplorer
             }
         }
 
-        private void BtnForward_Click(object sender, EventArgs e)
+        private async void BtnForward_Click(object sender, EventArgs e)
         {
             var path = navigationManager.GoForward();
             if (path != null)
@@ -1857,7 +2555,10 @@ namespace win9xplorer
                 
                 suggestionManager.SetNavigatingProgrammatically(false);
                 
-                fileSystemManager.LoadDirectoryContents(path, listView);
+                if (!await LoadDirectoryContentsAsync(path))
+                {
+                    return;
+                }
                 UpdateNavigationButtons();
                 UpdateStatusBar();
                 UpdateWindowTitle();
@@ -1936,7 +2637,41 @@ namespace win9xplorer
             statusLabel.Text = $"{itemCount} object(s) ({folderCount} folder(s), {fileCount} file(s))";
         }
 
-        private void ListView_MouseUp(object sender, MouseEventArgs e)
+        private void SetOperationStatus(string message, bool inProgress)
+        {
+            if (!inProgress)
+            {
+                RestoreStatusText();
+                return;
+            }
+
+            statusLabel.Text = message;
+            operationProgressBar.Visible = inProgress;
+        }
+
+        private void RestoreStatusText()
+        {
+            operationProgressBar.Visible = false;
+
+            if (string.IsNullOrEmpty(navigationManager.CurrentPath))
+            {
+                if (txtAddress.Text == "My Computer")
+                {
+                    statusLabel.Text = $"{listView.Items.Count} drive(s)";
+                    return;
+                }
+
+                if (txtAddress.Text == "Favorites")
+                {
+                    statusLabel.Text = $"{listView.Items.Count} favorite(s)";
+                    return;
+                }
+            }
+
+            UpdateStatusBar();
+        }
+
+        private void ListView_MouseUp(object? sender, MouseEventArgs e)
         {
             Debug.WriteLine($"ListView_MouseUp called - Button: {e.Button}, Location: {e.Location}");
             
@@ -2006,7 +2741,7 @@ namespace win9xplorer
             }
         }
 
-        private void BtnRefresh_Click(object sender, EventArgs e)
+        private async void BtnRefresh_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(navigationManager.CurrentPath))
             {
@@ -2025,7 +2760,7 @@ namespace win9xplorer
             else if (!string.IsNullOrEmpty(navigationManager.CurrentPath))
             {
                 // Refresh regular directory
-                fileSystemManager.LoadDirectoryContents(navigationManager.CurrentPath, listView);
+                await LoadDirectoryContentsAsync(navigationManager.CurrentPath);
             }
             
             UpdateStatusBar();

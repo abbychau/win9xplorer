@@ -15,6 +15,9 @@ namespace win9xplorer
         private bool isNavigatingProgrammatically = false;
         private string originalAddressText = ""; // Track original text before suggestion navigation
         private bool isNavigatingSuggestions = false; // Track if we're navigating through suggestions
+        private System.Windows.Forms.Timer? suggestionDebounceTimer;
+        private CancellationTokenSource? suggestionCts;
+        private string pendingSuggestionText = "";
 
         public void SetupSuggestions(Form parentForm, ToolStripTextBox addressTextBox)
         {
@@ -58,6 +61,9 @@ namespace win9xplorer
             addressTextBox.TextChanged += AddressTextBox_TextChanged;
             addressTextBox.KeyDown += AddressTextBox_KeyDown;
             addressTextBox.LostFocus += AddressTextBox_LostFocus;
+
+            suggestionDebounceTimer = new System.Windows.Forms.Timer { Interval = 150 };
+            suggestionDebounceTimer.Tick += SuggestionDebounceTimer_Tick;
         }
 
         private void AddressTextBox_TextChanged(object? sender, EventArgs e)
@@ -85,12 +91,37 @@ namespace win9xplorer
             // Check if we should show suggestions
             if (ShouldShowSuggestions(currentText))
             {
-                ShowSuggestions(currentText);
+                QueueSuggestions(currentText);
             }
             else
             {
+                CancelPendingSuggestionRequest();
                 HideSuggestions();
             }
+        }
+
+        private void QueueSuggestions(string currentText)
+        {
+            pendingSuggestionText = currentText;
+
+            if (suggestionDebounceTimer == null)
+            {
+                _ = ShowSuggestionsAsync(currentText, CancellationToken.None);
+                return;
+            }
+
+            suggestionDebounceTimer.Stop();
+            suggestionDebounceTimer.Start();
+        }
+
+        private async void SuggestionDebounceTimer_Tick(object? sender, EventArgs e)
+        {
+            suggestionDebounceTimer?.Stop();
+
+            CancelPendingSuggestionRequest();
+            suggestionCts = new CancellationTokenSource();
+
+            await ShowSuggestionsAsync(pendingSuggestionText, suggestionCts.Token);
         }
 
         private bool ShouldShowSuggestions(string text)
@@ -113,7 +144,7 @@ namespace win9xplorer
             return false;
         }
 
-        private async void ShowSuggestions(string currentText)
+        private async Task ShowSuggestionsAsync(string currentText, CancellationToken cancellationToken)
         {
             if (suggestionListBox == null || addressTextBox == null || parentForm == null)
                 return;
@@ -131,7 +162,9 @@ namespace win9xplorer
 
             try
             {
-                var suggestions = await GetSuggestionsAsync(currentText);
+                var suggestions = await GetSuggestionsAsync(currentText, cancellationToken);
+                if (cancellationToken.IsCancellationRequested)
+                    return;
                 
                 if (suggestions.Count > 0)
                 {
@@ -171,6 +204,10 @@ namespace win9xplorer
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                Debug.WriteLine("Suggestion request cancelled.");
+            }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error getting suggestions: {ex.Message}");
@@ -181,9 +218,9 @@ namespace win9xplorer
             }
         }
 
-        private async Task<List<string>> GetSuggestionsAsync(string currentText)
+        private async Task<List<string>> GetSuggestionsAsync(string currentText, CancellationToken cancellationToken)
         {
-            return await Task.Run(() => GetSuggestions(currentText));
+            return await Task.Run(() => GetSuggestions(currentText), cancellationToken);
         }
 
         private List<string> GetSuggestions(string currentText)
@@ -371,7 +408,7 @@ namespace win9xplorer
 
         private void AddressTextBox_KeyDown(object? sender, KeyEventArgs e)
         {
-            if (suggestionListBox == null || !isShowing)
+            if (suggestionListBox == null || addressTextBox == null || !isShowing)
                 return;
                 
             switch (e.KeyCode)
@@ -597,6 +634,7 @@ namespace win9xplorer
         {
             if (suggestionListBox != null)
             {
+                suggestionDebounceTimer?.Stop();
                 suggestionListBox.Visible = false;
                 isShowing = false;
                 
@@ -619,16 +657,36 @@ namespace win9xplorer
             isNavigatingProgrammatically = isNavigating;
             if (isNavigating)
             {
+                CancelPendingSuggestionRequest();
                 HideSuggestions();
             }
         }
 
         public void Dispose()
         {
+            CancelPendingSuggestionRequest();
+
+            if (suggestionDebounceTimer != null)
+            {
+                suggestionDebounceTimer.Stop();
+                suggestionDebounceTimer.Dispose();
+                suggestionDebounceTimer = null;
+            }
+
             if (suggestionListBox != null)
             {
                 suggestionListBox.Dispose();
                 suggestionListBox = null;
+            }
+        }
+
+        private void CancelPendingSuggestionRequest()
+        {
+            if (suggestionCts != null)
+            {
+                suggestionCts.Cancel();
+                suggestionCts.Dispose();
+                suggestionCts = null;
             }
         }
 

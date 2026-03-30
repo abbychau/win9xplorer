@@ -63,6 +63,7 @@
             btnBookmark = new ToolStripButton();
             statusStrip = new StatusStrip();
             statusLabel = new ToolStripStatusLabel();
+            operationProgressBar = new ToolStripProgressBar();
             menuStrip.SuspendLayout();
             toolStripContainer.ContentPanel.SuspendLayout();
             toolStripContainer.TopToolStripPanel.SuspendLayout();
@@ -368,7 +369,7 @@
             // statusStrip
             // 
             statusStrip.ImageScalingSize = new Size(20, 20);
-            statusStrip.Items.AddRange(new ToolStripItem[] { statusLabel });
+            statusStrip.Items.AddRange(new ToolStripItem[] { statusLabel, operationProgressBar });
             statusStrip.Location = new Point(0, 359);
             statusStrip.Name = "statusStrip";
             statusStrip.Padding = new Padding(1, 0, 18, 0);
@@ -382,6 +383,14 @@
             statusLabel.Size = new Size(53, 19);
             statusLabel.Text = "Ready";
             // 
+            // operationProgressBar
+            // 
+            operationProgressBar.MarqueeAnimationSpeed = 30;
+            operationProgressBar.Name = "operationProgressBar";
+            operationProgressBar.Size = new Size(120, 17);
+            operationProgressBar.Style = ProgressBarStyle.Marquee;
+            operationProgressBar.Visible = false;
+            // 
             // Form1
             // 
             AutoScaleDimensions = new SizeF(9F, 19F);
@@ -394,7 +403,7 @@
             MainMenuStrip = menuStrip;
             Margin = new Padding(4);
             Name = "Form1";
-            Text = "Windows Explorer";
+            Text = "File Explorer";
             FormClosed += Form1_FormClosed;
             Load += Form1_Load;
             KeyDown += Form1_KeyDown;
@@ -460,5 +469,6 @@
         
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusLabel;
+        private ToolStripProgressBar operationProgressBar;
     }
 }

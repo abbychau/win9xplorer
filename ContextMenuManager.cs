@@ -8,11 +8,20 @@ namespace win9xplorer
     /// </summary>
     internal class ContextMenuManager
     {
+        private readonly FileOperationsService fileOperationsService;
         private ContextMenuStrip? listViewContextMenu;
         private Form? parentForm;
         private ContextMenuStrip? currentActiveMenu;
         private Action? renameCallback;
         private Action? deleteCallback;
+        private Action? refreshCallback;
+        private Action<View>? setViewCallback;
+        private Action<string, bool>? operationStatusCallback;
+
+        public ContextMenuManager(FileOperationsService? fileOperationsService = null)
+        {
+            this.fileOperationsService = fileOperationsService ?? new FileOperationsService();
+        }
 
         public void SetupContextMenu(ListView listView)
         {
@@ -22,12 +31,18 @@ namespace win9xplorer
             listViewContextMenu = new ContextMenuStrip();
             
             var refreshItem = new ToolStripMenuItem("Refresh");
+            refreshItem.Click += (s, e) => refreshCallback?.Invoke();
             
             var viewMenu = new ToolStripMenuItem("View");
             var largeIconsItem = new ToolStripMenuItem("Large Icons");
             var smallIconsItem = new ToolStripMenuItem("Small Icons");
             var listItem = new ToolStripMenuItem("List");
             var detailsItem = new ToolStripMenuItem("Details");
+
+            largeIconsItem.Click += (s, e) => setViewCallback?.Invoke(View.LargeIcon);
+            smallIconsItem.Click += (s, e) => setViewCallback?.Invoke(View.SmallIcon);
+            listItem.Click += (s, e) => setViewCallback?.Invoke(View.List);
+            detailsItem.Click += (s, e) => setViewCallback?.Invoke(View.Details);
             
             viewMenu.DropDownItems.AddRange(new[] { largeIconsItem, smallIconsItem, listItem, detailsItem });
             
@@ -48,6 +63,11 @@ namespace win9xplorer
             this.deleteCallback = deleteCallback;
         }
 
+        public void SetupOperationStatusCallback(Action<string, bool> operationStatusCallback)
+        {
+            this.operationStatusCallback = operationStatusCallback;
+        }
+
         public void SetupTreeViewContextMenu(TreeView treeView)
         {
             // Store reference to parent form if not already set
@@ -60,7 +80,7 @@ namespace win9xplorer
             treeView.MouseDown += TreeView_MouseDown;
         }
 
-        private void TreeView_MouseDown(object sender, MouseEventArgs e)
+        private void TreeView_MouseDown(object? sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Right)
             {
@@ -69,7 +89,7 @@ namespace win9xplorer
             }
         }
 
-        private void TreeView_MouseUp(object sender, MouseEventArgs e)
+        private void TreeView_MouseUp(object? sender, MouseEventArgs e)
         {
             if (sender is not TreeView treeView || e.Button != MouseButtons.Right)
                 return;
@@ -259,51 +279,8 @@ namespace win9xplorer
 
         private void UpdateContextMenuEventHandlers(Action refreshAction, Action<View> setViewAction)
         {
-            if (listViewContextMenu == null) return;
-
-            // Clear existing handlers and set new ones
-            foreach (ToolStripItem item in listViewContextMenu.Items)
-            {
-                if (item is ToolStripMenuItem menuItem)
-                {
-                    if (menuItem.Text == "Refresh")
-                    {
-                        // Remove all existing click handlers
-                        var field = typeof(ToolStripMenuItem).GetField("EventClick", 
-                            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
-                        if (field?.GetValue(menuItem) != null)
-                        {
-                            menuItem.Click -= (s, e) => refreshAction();
-                        }
-                        
-                        menuItem.Click += (s, e) => refreshAction();
-                    }
-                    else if (menuItem.Text == "View" && menuItem.HasDropDownItems)
-                    {
-                        foreach (ToolStripMenuItem viewItem in menuItem.DropDownItems.OfType<ToolStripMenuItem>())
-                        {
-                            // Clear and reassign view handlers
-                            viewItem.Click -= (s, e) => { };
-                            
-                            switch (viewItem.Text)
-                            {
-                                case "Large Icons":
-                                    viewItem.Click += (s, e) => setViewAction(View.LargeIcon);
-                                    break;
-                                case "Small Icons":
-                                    viewItem.Click += (s, e) => setViewAction(View.SmallIcon);
-                                    break;
-                                case "List":
-                                    viewItem.Click += (s, e) => setViewAction(View.List);
-                                    break;
-                                case "Details":
-                                    viewItem.Click += (s, e) => setViewAction(View.Details);
-                                    break;
-                            }
-                        }
-                    }
-                }
-            }
+            refreshCallback = refreshAction;
+            setViewCallback = setViewAction;
         }
 
         private void ShowWindowsContextMenuForDrive(ListView listView, string drivePath, Point location)
@@ -765,13 +742,8 @@ namespace win9xplorer
             try
             {
                 if (filePaths.Count == 0) return;
-                
-                // Create a StringCollection with file paths
-                var files = new System.Collections.Specialized.StringCollection();
-                files.AddRange(filePaths.ToArray());
-                
-                // Copy to clipboard
-                Clipboard.SetFileDropList(files);
+
+                fileOperationsService.CopyToClipboard(filePaths);
                 
                 Debug.WriteLine($"Copied {filePaths.Count} files to clipboard");
             }
@@ -788,20 +760,8 @@ namespace win9xplorer
             try
             {
                 if (filePaths.Count == 0) return;
-                
-                // Create a StringCollection with file paths
-                var files = new System.Collections.Specialized.StringCollection();
-                files.AddRange(filePaths.ToArray());
-                
-                // Copy to clipboard with cut format
-                var dataObject = new DataObject();
-                dataObject.SetFileDropList(files);
-                
-                // Add a special format to indicate cut (not copy)
-                byte[] moveEffect = BitConverter.GetBytes(2); // DROPEFFECT_MOVE
-                dataObject.SetData("Preferred DropEffect", moveEffect);
-                
-                Clipboard.SetDataObject(dataObject, true);
+
+                fileOperationsService.CutToClipboard(filePaths);
                 
                 Debug.WriteLine($"Cut {filePaths.Count} files to clipboard");
                 
@@ -817,74 +777,45 @@ namespace win9xplorer
             }
         }
 
-        private void DeleteFiles(List<string> filePaths)
+        private async void DeleteFiles(List<string> filePaths)
         {
             try
             {
                 if (filePaths.Count == 0) return;
                 
                 string message = filePaths.Count == 1 
-                    ? $"Are you sure you want to delete '{Path.GetFileName(filePaths[0])}'?"
-                    : $"Are you sure you want to delete these {filePaths.Count} items?";
+                    ? $"Move '{Path.GetFileName(filePaths[0])}' to the Recycle Bin?"
+                    : $"Move these {filePaths.Count} items to the Recycle Bin?";
                 
                 var result = MessageBox.Show(message, "Delete Files", 
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 
                 if (result == DialogResult.Yes)
                 {
-                    int successCount = 0;
-                    var errors = new List<string>();
-                    
-                    foreach (string filePath in filePaths)
-                    {
-                        try
-                        {
-                            if (Directory.Exists(filePath))
-                            {
-                                Directory.Delete(filePath, true); // Recursive delete for directories
-                                successCount++;
-                                Debug.WriteLine($"Deleted directory: {filePath}");
-                            }
-                            else if (File.Exists(filePath))
-                            {
-                                File.Delete(filePath);
-                                successCount++;
-                                Debug.WriteLine($"Deleted file: {filePath}");
-                            }
-                        }
-                        catch (UnauthorizedAccessException)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': Access denied");
-                        }
-                        catch (DirectoryNotFoundException)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': Path not found");
-                        }
-                        catch (IOException ex)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': {ex.Message}");
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add($"'{Path.GetFileName(filePath)}': {ex.Message}");
-                        }
-                    }
-                    
-                    Debug.WriteLine($"Delete operation completed: {successCount} successful, {errors.Count} errors");
-                    
-                    // Refresh using the Form1's delete callback which will handle refresh properly
+                    operationStatusCallback?.Invoke("Moving items to Recycle Bin...", true);
+                    FileOperationResult deleteResult;
                     try
                     {
-                        if (parentForm is Form1 mainForm)
-                        {
-                            // Use BeginInvoke to ensure UI refresh happens after COM context menu closes
-                            mainForm.BeginInvoke(new Action(() => {
-                                // Trigger proper refresh of the current directory
-                                mainForm.GetType().GetMethod("BtnRefresh_Click", 
-                                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                                    ?.Invoke(mainForm, new object[] { mainForm, EventArgs.Empty });
-                            }));
-                        }
+                        deleteResult = await fileOperationsService.DeletePathsAsync(filePaths);
+                    }
+                    finally
+                    {
+                        operationStatusCallback?.Invoke("Ready", false);
+                    }
+
+                    if (deleteResult.IsCanceled)
+                    {
+                        MessageBox.Show("Delete operation was canceled.", "Operation Canceled",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+
+                    Debug.WriteLine($"Delete operation completed: {deleteResult.SuccessCount} successful, {deleteResult.Errors.Count} errors");
+                    
+                    // Refresh current view after delete
+                    try
+                    {
+                        refreshCallback?.Invoke();
                     }
                     catch (Exception ex)
                     {
@@ -892,14 +823,14 @@ namespace win9xplorer
                     }
                     
                     // Show results if there were errors
-                    if (errors.Count > 0)
+                    if (deleteResult.Errors.Count > 0)
                     {
-                        if (successCount > 0)
+                        if (deleteResult.SuccessCount > 0)
                         {
-                            string errorMessage = $"Successfully deleted {successCount} items.\n\nErrors:\n" + 
-                                                string.Join("\n", errors.Take(5));
-                            if (errors.Count > 5)
-                                errorMessage += $"\n... and {errors.Count - 5} more errors";
+                            string errorMessage = $"Successfully deleted {deleteResult.SuccessCount} items.\n\nErrors:\n" + 
+                                                string.Join("\n", deleteResult.Errors.Take(5));
+                            if (deleteResult.Errors.Count > 5)
+                                errorMessage += $"\n... and {deleteResult.Errors.Count - 5} more errors";
                                 
                             MessageBox.Show(errorMessage, "Delete Partial Success", 
                                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -907,9 +838,9 @@ namespace win9xplorer
                         else
                         {
                             string errorMessage = "Failed to delete items:\n" + 
-                                                string.Join("\n", errors.Take(5));
-                            if (errors.Count > 5)
-                                errorMessage += $"\n... and {errors.Count - 5} more errors";
+                                                string.Join("\n", deleteResult.Errors.Take(5));
+                            if (deleteResult.Errors.Count > 5)
+                                errorMessage += $"\n... and {deleteResult.Errors.Count - 5} more errors";
                                 
                             MessageBox.Show(errorMessage, "Delete Error", 
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);

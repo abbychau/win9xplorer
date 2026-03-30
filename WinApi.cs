@@ -50,6 +50,17 @@ namespace win9xplorer
         [DllImport("user32.dll")]
         internal static extern bool SetForegroundWindow(IntPtr hWnd);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+
         [DllImport("user32.dll")]
         internal static extern IntPtr CreatePopupMenu();
 
@@ -59,6 +70,13 @@ namespace win9xplorer
         // Constants for context menu
         internal const uint TPM_RETURNCMD = 0x0100;
         internal const uint TPM_LEFTBUTTON = 0x0000;
+        internal const int WH_KEYBOARD_LL = 13;
+        internal const int WM_KEYDOWN = 0x0100;
+        internal const int WM_KEYUP = 0x0101;
+        internal const int WM_SYSKEYDOWN = 0x0104;
+        internal const int WM_SYSKEYUP = 0x0105;
+        internal const int VK_LWIN = 0x5B;
+        internal const int VK_RWIN = 0x5C;
         internal static readonly Guid IID_IShellFolder = new Guid("000214E6-0000-0000-C000-000000000046");
         internal static readonly Guid IID_IContextMenu = new Guid("000214e4-0000-0000-c000-000000000046");
 
@@ -167,6 +185,18 @@ namespace win9xplorer
 
             [PreserveSig]
             int GetCommandString(uint idCmd, uint uFlags, IntPtr pwReserved, [MarshalAs(UnmanagedType.LPStr)] StringBuilder pszName, uint cchMax);
+        }
+
+        internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
         }
     }
 }

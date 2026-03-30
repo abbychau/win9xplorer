@@ -7,6 +7,23 @@ namespace win9xplorer
     /// </summary>
     internal class FileSystemManager
     {
+        internal sealed class DirectoryEntryInfo
+        {
+            public required string Name { get; init; }
+            public required string FullPath { get; init; }
+            public required bool IsDirectory { get; init; }
+            public required string SizeText { get; init; }
+            public required string TypeText { get; init; }
+            public required string ModifiedText { get; init; }
+        }
+
+        internal sealed class TreeDirectoryInfo
+        {
+            public required string Name { get; init; }
+            public required string FullPath { get; init; }
+            public required bool HasChildren { get; init; }
+        }
+
         private readonly IconManager iconManager;
 
         public FileSystemManager(IconManager iconManager)
@@ -14,8 +31,107 @@ namespace win9xplorer
             this.iconManager = iconManager;
         }
 
+        public async Task<List<DirectoryEntryInfo>> GetDirectoryEntriesAsync(string path, CancellationToken cancellationToken)
+        {
+            return await Task.Run(() => GetDirectoryEntries(path, cancellationToken), cancellationToken);
+        }
+
+        public async Task<List<TreeDirectoryInfo>> GetTreeDirectoryInfosAsync(string path, CancellationToken cancellationToken)
+        {
+            return await Task.Run(() => GetTreeDirectoryInfos(path, cancellationToken), cancellationToken);
+        }
+
+        private List<DirectoryEntryInfo> GetDirectoryEntries(string path, CancellationToken cancellationToken)
+        {
+            var entries = new List<DirectoryEntryInfo>();
+
+            foreach (var directory in Directory.EnumerateDirectories(path))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var dirInfo = new DirectoryInfo(directory);
+                    entries.Add(new DirectoryEntryInfo
+                    {
+                        Name = dirInfo.Name,
+                        FullPath = directory,
+                        IsDirectory = true,
+                        SizeText = "",
+                        TypeText = "File Folder",
+                        ModifiedText = dirInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt")
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Skipping directory '{directory}': {ex.Message}");
+                }
+            }
+
+            foreach (var file in Directory.EnumerateFiles(path))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var fileInfo = new FileInfo(file);
+                    entries.Add(new DirectoryEntryInfo
+                    {
+                        Name = fileInfo.Name,
+                        FullPath = file,
+                        IsDirectory = false,
+                        SizeText = ExplorerUtils.FormatFileSize(fileInfo.Length),
+                        TypeText = ExplorerUtils.GetFileType(fileInfo.Extension),
+                        ModifiedText = fileInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt")
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Skipping file '{file}': {ex.Message}");
+                }
+            }
+
+            return entries;
+        }
+
+        private List<TreeDirectoryInfo> GetTreeDirectoryInfos(string path, CancellationToken cancellationToken)
+        {
+            var directories = new List<TreeDirectoryInfo>();
+
+            foreach (var directory in Directory.EnumerateDirectories(path))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    bool hasChildren = false;
+                    try
+                    {
+                        hasChildren = Directory.EnumerateDirectories(directory).Any();
+                    }
+                    catch
+                    {
+                    }
+
+                    directories.Add(new TreeDirectoryInfo
+                    {
+                        Name = Path.GetFileName(directory),
+                        FullPath = directory,
+                        HasChildren = hasChildren
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Skipping tree node '{directory}': {ex.Message}");
+                }
+            }
+
+            return directories;
+        }
+
         public void LoadDirectoryContents(string path, ListView listView)
         {
+            listView.BeginUpdate();
             listView.Items.Clear();
 
             try
@@ -23,39 +139,51 @@ namespace win9xplorer
                 var items = new List<ListViewItem>();
                 
                 // Add directories first
-                foreach (var directory in Directory.GetDirectories(path))
+                foreach (var directory in Directory.EnumerateDirectories(path))
                 {
-                    var dirInfo = new DirectoryInfo(directory);
-                    var item = new ListViewItem(dirInfo.Name)
+                    try
                     {
-                        ImageKey = iconManager.GetIconKey(directory, true),
-                        Tag = directory
-                    };
-                    
-                    // Always add subitems for details view
-                    item.SubItems.Add(""); // Size - empty for folders
-                    item.SubItems.Add("File Folder");
-                    item.SubItems.Add(dirInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt"));
-                    
-                    items.Add(item);
+                        var dirInfo = new DirectoryInfo(directory);
+                        var item = new ListViewItem(dirInfo.Name)
+                        {
+                            ImageKey = iconManager.GetIconKey(directory, true),
+                            Tag = directory
+                        };
+
+                        item.SubItems.Add("");
+                        item.SubItems.Add("File Folder");
+                        item.SubItems.Add(dirInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt"));
+
+                        items.Add(item);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Skipping directory '{directory}': {ex.Message}");
+                    }
                 }
 
                 // Add files
-                foreach (var file in Directory.GetFiles(path))
+                foreach (var file in Directory.EnumerateFiles(path))
                 {
-                    var fileInfo = new FileInfo(file);
-                    var item = new ListViewItem(fileInfo.Name)
+                    try
                     {
-                        ImageKey = iconManager.GetIconKey(file, false),
-                        Tag = file
-                    };
-                    
-                    // Always add subitems for details view
-                    item.SubItems.Add(ExplorerUtils.FormatFileSize(fileInfo.Length));
-                    item.SubItems.Add(ExplorerUtils.GetFileType(fileInfo.Extension));
-                    item.SubItems.Add(fileInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt"));
-                    
-                    items.Add(item);
+                        var fileInfo = new FileInfo(file);
+                        var item = new ListViewItem(fileInfo.Name)
+                        {
+                            ImageKey = iconManager.GetIconKey(file, false),
+                            Tag = file
+                        };
+
+                        item.SubItems.Add(ExplorerUtils.FormatFileSize(fileInfo.Length));
+                        item.SubItems.Add(ExplorerUtils.GetFileType(fileInfo.Extension));
+                        item.SubItems.Add(fileInfo.LastWriteTime.ToString("M/d/yyyy h:mm tt"));
+
+                        items.Add(item);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Skipping file '{file}': {ex.Message}");
+                    }
                 }
                 
                 listView.Items.AddRange(items.ToArray());
@@ -64,6 +192,10 @@ namespace win9xplorer
             {
                 MessageBox.Show($"Error loading directory contents: {ex.Message}", "Error", 
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                listView.EndUpdate();
             }
         }
 
@@ -171,26 +303,35 @@ namespace win9xplorer
                 string path = node.Tag?.ToString() ?? "";
                 if (Directory.Exists(path))
                 {
-                    foreach (var directory in Directory.GetDirectories(path))
+                    foreach (var directory in Directory.EnumerateDirectories(path))
                     {
-                        var folderNode = new TreeNode(Path.GetFileName(directory))
-                        {
-                            ImageKey = "folder",
-                            SelectedImageKey = "folder",
-                            Tag = directory
-                        };
-
-                        // Check if folder has subdirectories
                         try
                         {
-                            if (Directory.GetDirectories(directory).Length > 0)
+                            var folderNode = new TreeNode(Path.GetFileName(directory))
                             {
-                                folderNode.Nodes.Add(new TreeNode("Loading..."));
-                            }
-                        }
-                        catch { }
+                                ImageKey = "folder",
+                                SelectedImageKey = "folder",
+                                Tag = directory
+                            };
 
-                        node.Nodes.Add(folderNode);
+                            // Check if folder has subdirectories
+                            try
+                            {
+                                if (Directory.EnumerateDirectories(directory).Any())
+                                {
+                                    folderNode.Nodes.Add(new TreeNode("Loading..."));
+                                }
+                            }
+                            catch
+                            {
+                            }
+
+                            node.Nodes.Add(folderNode);
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine($"Skipping tree node '{directory}': {ex.Message}");
+                        }
                     }
                 }
             }

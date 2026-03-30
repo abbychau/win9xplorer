@@ -112,24 +112,7 @@ namespace win9xplorer
             // First try to load Windows XP icons from the "Windows XP Icons" folder
             try
             {
-                // Try multiple possible icon folder locations
-                string[] possiblePaths = {
-                    Path.Combine(Application.StartupPath, "Windows XP Icons"),
-                    Path.Combine(Directory.GetCurrentDirectory(), "Windows XP Icons"),
-                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Windows XP Icons")
-                };
-
-                string iconsFolder = "";
-                foreach (var path in possiblePaths)
-                {
-                    if (Directory.Exists(path))
-                    {
-                        iconsFolder = path;
-                        Debug.WriteLine($"Found Windows XP Icons folder at: {path}");
-                        break;
-                    }
-                }
-
+                string? iconsFolder = FindWindowsXPIconsFolder();
                 if (string.IsNullOrEmpty(iconsFolder))
                 {
                     Debug.WriteLine("Windows XP Icons folder not found in any expected location");
@@ -138,29 +121,29 @@ namespace win9xplorer
                 }
 
                 // Navigation icons using Windows XP style icons with multiple filename attempts
-                btnBack.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Back.png", "back.png", "Back.ico" }, "Back") 
+                btnBack.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Back.png" }, "Back") 
                     ?? GetBestShellIcon(new int[] { 149, 126, 0 }, "Back", true);
                     
-                btnForward.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Forward.png", "forward.png", "Forward.ico" }, "Forward") 
+                btnForward.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Forward.png" }, "Forward") 
                     ?? GetBestShellIcon(new int[] { 150, 127, 1 }, "Forward", true);
                     
-                btnUp.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Up.png", "up.png", "Up.ico" }, "Up") 
+                btnUp.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Up.png" }, "Up") 
                     ?? GetBestShellIcon(new int[] { 146, 25, 5 }, "Up", true);
                     
-                btnRefresh.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "IE Refresh.png", "Refresh.png", "refresh.png", "Refresh.ico" }, "Refresh") 
+                btnRefresh.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Refresh.png", "IE Refresh.png" }, "Refresh") 
                     ?? GetBestShellIcon(new int[] { 238, 239, 147 }, "Refresh", true);
                 
                 // View As icons using Windows XP style icons with better mappings and alternatives
-                btnViewLargeIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Icon View.png", "Tile View.png", "LargeIcons.png", "large_icons.png" }, "LargeIcons") 
+                btnViewLargeIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Icon View.png", "Tile View.png" }, "LargeIcons") 
                     ?? GetBestShellIcon(new int[] { 269, 3, 2 }, "LargeIcons", true);
                     
-                btnViewSmallIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Folder View - Classic.png", "Thumbnail View.png", "SmallIcons.png", "small_icons.png" }, "SmallIcons") 
+                btnViewSmallIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Folder View - Classic.png", "Thumbnail View.png" }, "SmallIcons") 
                     ?? GetBestShellIcon(new int[] { 268, 152, 2 }, "SmallIcons", true);
                     
-                btnViewList.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Checklist.png", "List.png", "list.png", "List View.png" }, "List") 
+                btnViewList.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Checklist.png", "List View.png" }, "List") 
                     ?? GetBestShellIcon(new int[] { 267, 151, 1 }, "List", true);
                     
-                btnViewDetails.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Detail View.png", "Details.png", "details.png", "Detail.png" }, "Details") 
+                btnViewDetails.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Detail View.png", "Details.png" }, "Details") 
                     ?? GetBestShellIcon(new int[] { 266, 153, 4 }, "Details", true);
                 
                 Debug.WriteLine("Windows XP Icons setup completed");
@@ -175,11 +158,11 @@ namespace win9xplorer
             Debug.WriteLine("=== SetupToolbarIcons Completed ===");
         }
 
-        private Bitmap? LoadWindowsXPIconWithAlternatives(string iconsFolder, string[] iconFileNames, string buttonName)
+        private Bitmap? LoadWindowsXPIconWithAlternatives(string iconsFolder, string[] iconFileNames, string buttonName, int size = 16)
         {
             foreach (string iconFileName in iconFileNames)
             {
-                var bitmap = LoadWindowsXPIcon(iconsFolder, iconFileName);
+                var bitmap = LoadWindowsXPIcon(iconsFolder, iconFileName, size);
                 if (bitmap != null)
                 {
                     Debug.WriteLine($"Successfully loaded {buttonName} icon from: {iconFileName}");
@@ -191,7 +174,7 @@ namespace win9xplorer
             return null;
         }
 
-        private Bitmap? LoadWindowsXPIcon(string iconsFolder, string iconFileName)
+        private Bitmap? LoadWindowsXPIcon(string iconsFolder, string iconFileName, int size = 16)
         {
             try
             {
@@ -214,12 +197,12 @@ namespace win9xplorer
 
                 Debug.WriteLine($"Loading icon: {iconsPath} (Size: {fileInfo.Length} bytes)");
 
-                // Load the image and resize to 16x16 for toolbar
+                // Load the image and resize for toolbar usage
                 using (var originalImage = Image.FromFile(iconsPath))
                 {
                     Debug.WriteLine($"Original image size: {originalImage.Width}x{originalImage.Height}, Format: {originalImage.PixelFormat}");
                     
-                    var bitmap = new Bitmap(16, 16, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                     using (var g = Graphics.FromImage(bitmap))
                     {
                         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
@@ -232,11 +215,11 @@ namespace win9xplorer
                         g.Clear(Color.Transparent);
                         
                         // Draw the resized icon with proper transparency
-                        g.DrawImage(originalImage, new Rectangle(0, 0, 16, 16), 
+                        g.DrawImage(originalImage, new Rectangle(0, 0, size, size), 
                             new Rectangle(0, 0, originalImage.Width, originalImage.Height), GraphicsUnit.Pixel);
                     }
                     
-                    Debug.WriteLine($"Successfully created 16x16 bitmap from: {iconFileName}");
+                    Debug.WriteLine($"Successfully created {size}x{size} bitmap from: {iconFileName}");
                     return bitmap;
                 }
             }
@@ -277,11 +260,11 @@ namespace win9xplorer
         private void SetupFallbackToolbarIcons(ToolStripButton btnBack, ToolStripButton btnForward, ToolStripButton btnUp, ToolStripButton btnRefresh,
             ToolStripButton btnViewLargeIcons, ToolStripButton btnViewSmallIcons, ToolStripButton btnViewList, ToolStripButton btnViewDetails)
         {
-            // Enhanced fallback icons with better visual quality
-            btnBack.Image = CreateEnhancedFallbackIcon("Back", 16);
-            btnForward.Image = CreateEnhancedFallbackIcon("Forward", 16);
-            btnUp.Image = CreateEnhancedFallbackIcon("Up", 16);
-            btnRefresh.Image = CreateEnhancedFallbackIcon("Refresh", 16);
+            // Fallback to real PNG assets
+            btnBack.Image = LoadFallbackToolbarAsset("Back", 16) ?? SystemIcons.Application.ToBitmap();
+            btnForward.Image = LoadFallbackToolbarAsset("Forward", 16) ?? SystemIcons.Application.ToBitmap();
+            btnUp.Image = LoadFallbackToolbarAsset("Up", 16) ?? SystemIcons.Application.ToBitmap();
+            btnRefresh.Image = LoadFallbackToolbarAsset("Refresh", 16) ?? SystemIcons.Application.ToBitmap();
             
             // Fallback icons for view modes
             btnViewLargeIcons.Image = CreateViewIcon("LargeIcons", 16);
@@ -292,140 +275,40 @@ namespace win9xplorer
 
         public Bitmap CreateViewIcon(string viewType, int size)
         {
-            var bitmap = new Bitmap(size, size);
-            using (var g = Graphics.FromImage(bitmap))
+            string[] candidates = viewType switch
             {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.HighQuality;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                
-                var blackBrush = Brushes.Black;
-                var lightPen = new Pen(Color.FromArgb(255, 255, 255));
-                var darkPen = new Pen(Color.FromArgb(128, 128, 128));
-                
-                switch (viewType)
+                "LargeIcons" => new[] { "Icon View.png", "Tile View.png" },
+                "SmallIcons" => new[] { "Folder View - Classic.png", "Thumbnail View.png" },
+                "List" => new[] { "Checklist.png", "List View.png" },
+                "Details" => new[] { "Detail View.png", "Details.png" },
+                "folders" => new[] { "Folder View - Common Tasks.png", "Folder View - Classic.png", "Folder Closed.png" },
+                "star" => new[] { "Favorites.png", "Add Network Place.png", "Address Book.png" },
+                "navigate" => new[] { "Go.png", "Open.png", "Double Click.png" },
+                _ => Array.Empty<string>()
+            };
+
+            string? iconsFolder = FindWindowsXPIconsFolder();
+            if (!string.IsNullOrEmpty(iconsFolder) && candidates.Length > 0)
+            {
+                Bitmap? loaded = LoadWindowsXPIconWithAlternatives(iconsFolder, candidates, viewType, size);
+                if (loaded != null)
                 {
-                    case "LargeIcons":
-                        // Draw large icon grid (2x2)
-                        g.FillRectangle(blackBrush, 2, 2, 4, 4);
-                        g.FillRectangle(blackBrush, 8, 2, 4, 4);
-                        g.FillRectangle(blackBrush, 2, 8, 4, 4);
-                        g.FillRectangle(blackBrush, 8, 8, 4, 4);
-                        break;
-                        
-                    case "SmallIcons":
-                        // Draw small icon grid (3x3)
-                        for (int i = 0; i < 3; i++)
-                        {
-                            for (int j = 0; j < 3; j++)
-                            {
-                                g.FillRectangle(blackBrush, 2 + i * 4, 2 + j * 4, 2, 2);
-                            }
-                        }
-                        break;
-                        
-                    case "List":
-                        // Draw list lines
-                        for (int i = 0; i < 4; i++)
-                        {
-                            g.DrawLine(Pens.Black, 2, 3 + i * 3, size - 3, 3 + i * 3);
-                        }
-                        break;
-                        
-                    case "Details":
-                        // Draw details view (lines with columns)
-                        g.DrawLine(Pens.Black, 2, 2, size - 3, 2);
-                        g.DrawLine(Pens.Black, 2, 2, 2, size - 3);
-                        g.DrawLine(Pens.Black, size - 3, 2, size - 3, size - 3);
-                        g.DrawLine(Pens.Black, 2, size - 3, size - 3, size - 3);
-                        
-                        // Vertical separators for columns
-                        g.DrawLine(Pens.Black, size / 2, 2, size / 2, size - 3);
-                        
-                        // Horizontal lines for rows
-                        for (int i = 1; i < 3; i++)
-                        {
-                            int y = 2 + (size - 5) * i / 3;
-                            g.DrawLine(Pens.Black, 2, y, size - 3, y);
-                        }
-                        break;
-                        
-                    case "folders":
-                        // Draw folder tree icon for TreeView toggle
-                        // Draw a simple folder with tree structure
-                        using (var folderBrush = new SolidBrush(Color.FromArgb(255, 255, 192)))
-                        {
-                            // Main folder
-                            g.FillRectangle(folderBrush, 6, 8, 8, 6);
-                            g.FillRectangle(folderBrush, 6, 6, 4, 3);
-                        }
-                        
-                        // Folder outline
-                        g.DrawRectangle(Pens.Black, 6, 8, 8, 6);
-                        g.DrawRectangle(Pens.Black, 6, 6, 4, 3);
-                        
-                        // Tree lines to indicate folder hierarchy
-                        g.DrawLine(Pens.Black, 2, 4, 2, 12);   // Vertical line
-                        g.DrawLine(Pens.Black, 2, 9, 6, 9);    // Horizontal line to folder
-                        g.DrawLine(Pens.Black, 2, 6, 4, 6);    // Branch line
-                        g.FillRectangle(blackBrush, 1, 3, 2, 2);  // Small folder at top
-                        break;
-                        
-                    case "star":
-                        // Draw a classic Windows 95/98 style star for favorites/bookmarks
-                        Point[] starPoints = {
-                            new Point(size/2, 2),                    // Top point
-                            new Point(size/2 + 2, size/2 - 1),      // Upper right
-                            new Point(size - 2, size/2 - 1),        // Right point
-                            new Point(size/2 + 3, size/2 + 2),      // Lower right
-                            new Point(size/2 + 4, size - 2),        // Bottom right
-                            new Point(size/2, size/2 + 4),          // Bottom point
-                            new Point(size/2 - 4, size - 2),        // Bottom left
-                            new Point(size/2 - 3, size/2 + 2),      // Lower left
-                            new Point(2, size/2 - 1),               // Left point
-                            new Point(size/2 - 2, size/2 - 1)       // Upper left
-                        };
-                        
-                        // Fill the star with yellow color for classic appearance
-                        using (var starBrush = new SolidBrush(Color.FromArgb(255, 255, 192)))
-                        {
-                            g.FillPolygon(starBrush, starPoints);
-                        }
-                        
-                        // Draw star outline in black
-                        g.DrawPolygon(Pens.Black, starPoints);
-                        break;
-                        
-                    case "navigate":
-                        // Draw a navigate/expand icon (folder with arrow)
-                        // Draw folder background
-                        using (var folderBrush = new SolidBrush(Color.FromArgb(255, 255, 192)))
-                        {
-                            g.FillRectangle(folderBrush, 2, 6, 10, 8);
-                            g.FillRectangle(folderBrush, 2, 4, 4, 3);
-                        }
-                        
-                        // Folder outline
-                        g.DrawRectangle(Pens.Black, 2, 6, 10, 8);
-                        g.DrawRectangle(Pens.Black, 2, 4, 4, 3);
-                        
-                        // Draw arrow pointing to tree
-                        Point[] arrowPoints = {
-                            new Point(size - 2, size/2 - 2),
-                            new Point(size - 6, size/2),
-                            new Point(size - 2, size/2 + 2)
-                        };
-                        g.FillPolygon(Brushes.Black, arrowPoints);
-                        
-                        // Draw simple tree lines
-                        g.DrawLine(Pens.Black, size - 10, size/2 - 4, size - 10, size/2 + 4);
-                        g.DrawLine(Pens.Black, size - 10, size/2, size - 7, size/2);
-                        break;
+                    return loaded;
                 }
-                
-                lightPen.Dispose();
-                darkPen.Dispose();
             }
+
+            return ResizeImage(SystemIcons.Application.ToBitmap(), size);
+        }
+
+        private static Bitmap ResizeImage(Image source, int size)
+        {
+            var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.Transparent);
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source, new Rectangle(0, 0, size, size));
             return bitmap;
         }
 
@@ -481,7 +364,7 @@ namespace win9xplorer
             return buttonName switch
             {
                 "LargeIcons" or "SmallIcons" or "List" or "Details" => CreateViewIcon(buttonName, smallIcon ? 16 : 32),
-                _ => CreateEnhancedFallbackIcon(buttonName, smallIcon ? 16 : 32)
+                _ => LoadFallbackToolbarAsset(buttonName, smallIcon ? 16 : 32) ?? SystemIcons.Application.ToBitmap()
             };
         }
 
@@ -540,107 +423,96 @@ namespace win9xplorer
             return null;
         }
 
-        private Bitmap CreateEnhancedFallbackIcon(string iconType, int size)
+        private Bitmap? LoadFallbackToolbarAsset(string iconType, int size)
         {
-            var bitmap = new Bitmap(size, size);
-            using (var g = Graphics.FromImage(bitmap))
+            string[] candidates = iconType switch
             {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.HighQuality;
-                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                
-                // Use classic Windows 95/98 3D button styling
-                var lightPen = new Pen(Color.FromArgb(255, 255, 255)); // Highlight
-                var darkPen = new Pen(Color.FromArgb(128, 128, 128));   // Shadow
-                var blackPen = new Pen(Color.Black);
-                
-                switch (iconType)
-                {
-                    case "Back":
-                        // Draw classic 3D back arrow with Windows 95 styling
-                        var backPoints = new Point[] 
-                        { 
-                            new(size-6, size/2-3), 
-                            new(4, size/2), 
-                            new(size-6, size/2+3) 
-                        };
-                        g.FillPolygon(Brushes.Black, backPoints);
-                        // Add 3D highlight effect
-                        g.DrawLine(lightPen, 4, size/2-1, size-7, size/2-4);
-                        break;
-                        
-                    case "Forward":
-                        // Draw classic 3D forward arrow
-                        var forwardPoints = new Point[] 
-                        { 
-                            new(6, size/2-3), 
-                            new(size-4, size/2), 
-                            new(6, size/2+3) 
-                        };
-                        g.FillPolygon(Brushes.Black, forwardPoints);
-                        // Add 3D highlight effect
-                        g.DrawLine(lightPen, 7, size/2-4, size-4, size/2-1);
-                        break;
-                        
-                    case "Up":
-                        // Draw classic 3D up arrow
-                        var upPoints = new Point[] 
-                        { 
-                            new(size/2, 4), 
-                            new(size/2-4, size-6), 
-                            new(size/2+4, size-6) 
-                        };
-                        g.FillPolygon(Brushes.Black, upPoints);
-                        // Add 3D highlight effect
-                        g.DrawLine(lightPen, size/2-3, size-7, size/2, 5);
-                        break;
-                        
-                    case "Refresh":
-                        // Draw classic refresh icon with 3D styling
-                        g.DrawArc(blackPen, 3, 3, size-6, size-6, 45, 270);
-                        // Draw arrow head
-                        var refreshArrow = new Point[] 
-                        { 
-                            new(size-3, 3), 
-                            new(size-6, 2), 
-                            new(size-6, 6) 
-                        };
-                        g.FillPolygon(Brushes.Black, refreshArrow);
-                        // Add 3D highlight
-                        g.DrawArc(lightPen, 4, 4, size-8, size-8, 225, 90);
-                        break;
-                }
-                
-                // Clean up pens
-                lightPen.Dispose();
-                darkPen.Dispose();
-                blackPen.Dispose();
+                "Back" => new[] { "Back.png" },
+                "Forward" => new[] { "Forward.png" },
+                "Up" => new[] { "Up.png" },
+                "Refresh" => new[] { "Refresh.png", "IE Refresh.png" },
+                _ => Array.Empty<string>()
+            };
+
+            if (candidates.Length == 0)
+            {
+                return null;
             }
-            return bitmap;
+
+            string? iconsFolder = FindWindowsXPIconsFolder();
+            if (string.IsNullOrEmpty(iconsFolder))
+            {
+                return null;
+            }
+
+            return LoadWindowsXPIconWithAlternatives(iconsFolder, candidates, iconType, size);
         }
 
-        public Icon CreateApplicationIcon()
+        private string? FindWindowsXPIconsFolder()
         {
-            var bitmap = new Bitmap(32, 32);
-            using (var g = Graphics.FromImage(bitmap))
+            string[] possiblePaths =
             {
-                g.Clear(Color.Transparent);
-                
-                // Draw a simple folder icon for the application
-                using (var brush = new SolidBrush(Color.FromArgb(255, 255, 192)))
+                Path.Combine(Application.StartupPath, "Windows XP Icons"),
+                Path.Combine(Directory.GetCurrentDirectory(), "Windows XP Icons"),
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Windows XP Icons")
+            };
+
+            foreach (string path in possiblePaths)
+            {
+                if (Directory.Exists(path))
                 {
-                    g.FillRectangle(brush, 4, 12, 24, 16);
-                    g.FillRectangle(brush, 4, 8, 10, 6);
-                }
-                
-                using (var pen = new Pen(Color.Black, 2))
-                {
-                    g.DrawRectangle(pen, 4, 12, 24, 16);
-                    g.DrawRectangle(pen, 4, 8, 10, 6);
+                    Debug.WriteLine($"Found Windows XP Icons folder at: {path}");
+                    return path;
                 }
             }
-            
-            return Icon.FromHandle(bitmap.GetHicon());
+            return null;
+        }
+
+        public Icon LoadApplicationIcon()
+        {
+            string[] appIconCandidates =
+            {
+                "Application Window.png",
+                "Explorer Delete.png",
+                "Desktop.png"
+            };
+
+            string? iconsFolder = FindWindowsXPIconsFolder();
+            if (!string.IsNullOrEmpty(iconsFolder))
+            {
+                foreach (string iconFileName in appIconCandidates)
+                {
+                    string iconPath = Path.Combine(iconsFolder, iconFileName);
+                    if (!File.Exists(iconPath))
+                    {
+                        continue;
+                    }
+
+                    using var sourceImage = Image.FromFile(iconPath);
+                    using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using (var graphics = Graphics.FromImage(bitmap))
+                    {
+                        graphics.Clear(Color.Transparent);
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.SmoothingMode = SmoothingMode.HighQuality;
+                        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        graphics.DrawImage(sourceImage, new Rectangle(0, 0, 32, 32));
+                    }
+
+                    IntPtr hIcon = bitmap.GetHicon();
+                    try
+                    {
+                        using var temporaryIcon = Icon.FromHandle(hIcon);
+                        return (Icon)temporaryIcon.Clone();
+                    }
+                    finally
+                    {
+                        WinApi.DestroyIcon(hIcon);
+                    }
+                }
+            }
+
+            return SystemIcons.Application;
         }
 
         /// <summary>
