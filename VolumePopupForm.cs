@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Media;
 using System.Runtime.InteropServices;
+using System.ComponentModel;
 
 namespace win9xplorer
 {
@@ -65,6 +66,10 @@ namespace win9xplorer
         private int selectedOutputDeviceId = 0;
         private bool isDraggingVolumeTrack;
         private bool volumeChangedWhileDragging;
+
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        [Browsable(false)]
+        public bool PlayFeedbackSoundOnMouseUp { get; set; } = true;
 
         public VolumePopupForm()
         {
@@ -195,6 +200,16 @@ namespace win9xplorer
 
             Deactivate += (_, _) => Hide();
             Shown += (_, _) => RefreshFromSystemVolume();
+            FormClosing += VolumePopupForm_FormClosing;
+        }
+
+        private void VolumePopupForm_FormClosing(object? sender, FormClosingEventArgs e)
+        {
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+            }
         }
 
         public void ShowAt(Point location)
@@ -334,7 +349,7 @@ namespace win9xplorer
                 return;
             }
 
-            if (volumeChangedWhileDragging)
+            if (volumeChangedWhileDragging && PlayFeedbackSoundOnMouseUp)
             {
                 PlayVolumeFeedbackSound();
             }

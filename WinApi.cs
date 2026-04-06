@@ -12,6 +12,9 @@ namespace win9xplorer
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         internal static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
 
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        internal static extern IntPtr SHGetFileInfo(IntPtr pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbSizeFileInfo, uint uFlags);
+
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern bool DestroyIcon(IntPtr hIcon);
 
@@ -50,6 +53,12 @@ namespace win9xplorer
         [DllImport("user32.dll")]
         internal static extern bool SetForegroundWindow(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        internal static extern bool IsIconic(IntPtr hWnd);
+
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -77,6 +86,8 @@ namespace win9xplorer
         internal const int WM_SYSKEYUP = 0x0105;
         internal const int VK_LWIN = 0x5B;
         internal const int VK_RWIN = 0x5C;
+        internal const int SW_RESTORE = 9;
+        internal const int SW_MINIMIZE = 6;
         internal static readonly Guid IID_IShellFolder = new Guid("000214E6-0000-0000-C000-000000000046");
         internal static readonly Guid IID_IContextMenu = new Guid("000214e4-0000-0000-c000-000000000046");
 

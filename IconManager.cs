@@ -472,6 +472,8 @@ namespace win9xplorer
         {
             string[] appIconCandidates =
             {
+                "Explorer.png",
+                "File Explorer.png",
                 "Application Window.png",
                 "Explorer Delete.png",
                 "Desktop.png"

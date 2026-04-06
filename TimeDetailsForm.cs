@@ -36,22 +36,8 @@ namespace win9xplorer
                 Font = Font
             };
 
-            var closeButton = new Button
-            {
-                Left = 160,
-                Top = 82,
-                Width = 74,
-                Height = 24,
-                Text = "Close",
-                DialogResult = DialogResult.OK
-            };
-
             Controls.Add(timeLabel);
             Controls.Add(dateLabel);
-            Controls.Add(closeButton);
-
-            AcceptButton = closeButton;
-            CancelButton = closeButton;
 
             tickTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             tickTimer.Tick += (_, _) => UpdateDateTime();
@@ -85,6 +71,17 @@ namespace win9xplorer
             UpdateDateTime();
             Show();
             Activate();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape)
+            {
+                Hide();
+                return true;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         private void UpdateDateTime()
