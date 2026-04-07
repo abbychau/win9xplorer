@@ -45,6 +45,8 @@ Double Bevel (Classic Style)
 
 **Keystrike Matters** – Be sure that high frequency keystrikes(e.g. cursor navigations, searches) that happens in old and new start menus still work.
 
+**Native, No Web / WPF** - For the best responsiveness and memory usage.
+
 ## Features
 
 - **Classic File Explorer** – Two-pane folder browser with TreeView and ListView, supporting drag-and-drop file operations, context menus, and address bar navigation
