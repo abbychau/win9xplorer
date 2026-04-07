@@ -225,9 +225,29 @@ namespace win9xplorer
 
             protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
             {
-                var selected = e.Item?.Selected == true && e.Item.Enabled;
-                e.ArrowColor = selected ? Color.White : Color.Black;
-                base.OnRenderArrow(e);
+                if (e.Item == null || e.ArrowRectangle.IsEmpty)
+                {
+                    return;
+                }
+
+                var selected = e.Item.Selected && e.Item.Enabled;
+                var arrowColor = selected ? Color.White : Color.Black;
+
+                using var brush = new SolidBrush(arrowColor);
+                var rect = e.ArrowRectangle;
+                var midX = rect.X + rect.Width / 2;
+                var midY = rect.Y + rect.Height / 2;
+                var arrowSize = Math.Min(rect.Width, rect.Height) / 2;
+
+                // Draw a right-pointing triangle
+                var points = new[]
+                {
+                    new Point(midX - arrowSize / 2, midY - arrowSize / 2),
+                    new Point(midX - arrowSize / 2, midY + arrowSize / 2),
+                    new Point(midX + arrowSize / 2, midY)
+                };
+
+                e.Graphics.FillPolygon(brush, points);
             }
         }
 
@@ -3596,7 +3616,16 @@ namespace win9xplorer
                     }
                     else if (winKeyPressed)
                     {
+                        // Handle Win+D for Show Desktop
+                        if (vkCode == 0x44) // D key
+                        {
+                            BeginInvoke(new Action(ShowDesktop));
+                            nonWinKeyPressedWhileWinHeld = true;
+                            return (IntPtr)1;
+                        }
+                        // Let other Win+ combinations pass through to the system
                         nonWinKeyPressedWhileWinHeld = true;
+                        return (IntPtr)0; // Don't block other Win+ shortcuts
                     }
 
                     if (HandleStartMenuSearchKey(vkCode))
