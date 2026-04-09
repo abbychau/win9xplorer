@@ -16,11 +16,13 @@ namespace win9xplorer
 
         public bool AutoHideTaskbar { get; set; } = false;
 
-        public string TaskbarButtonStyle { get; set; } = "Classic";
+        public string TaskbarButtonStyle { get; set; } = "Modern";
 
         public string TaskbarFontName { get; set; } = "MS Sans Serif";
 
         public float TaskbarFontSize { get; set; } = 8.25f;
+
+        public string TaskbarFontColor { get; set; } = "#000000";
 
         public bool TaskbarLocked { get; set; } = false;
 

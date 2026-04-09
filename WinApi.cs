@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Drawing;
 
 namespace win9xplorer
 {
@@ -51,6 +52,11 @@ namespace win9xplorer
         internal static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
+        internal static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        internal const uint GW_OWNER = 4;
+
+        [DllImport("user32.dll")]
         internal static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("user32.dll")]
@@ -60,7 +66,14 @@ namespace win9xplorer
         internal static extern bool IsIconic(IntPtr hWnd);
 
         [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll", SetLastError = true)]
         internal static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -69,25 +82,107 @@ namespace win9xplorer
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
-
         [DllImport("user32.dll")]
         internal static extern IntPtr CreatePopupMenu();
 
         [DllImport("user32.dll")]
         internal static extern bool DestroyMenu(IntPtr hMenu);
 
+        // AppBar API
+        [DllImport("shell32.dll")]
+        internal static extern IntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct APPBARDATA
+        {
+            public uint cbSize;
+            public IntPtr hWnd;
+            public uint uCallbackMessage;
+            public uint uEdge;
+            public RECT rc;
+            public IntPtr lParam;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+
+            public RECT(int left, int top, int right, int bottom)
+            {
+                Left = left;
+                Top = top;
+                Right = right;
+                Bottom = bottom;
+            }
+
+            public Rectangle ToRectangle() => Rectangle.FromLTRB(Left, Top, Right, Bottom);
+        }
+
+        internal enum AppBarMsg
+        {
+            New = 0x00000001,
+            Remove = 0x00000002,
+            SetPos = 0x00000003,
+            GetPos = 0x00000004,
+            GetAutoHideBar = 0x00000005,
+            SetAutoHideBar = 0x00000006,
+            WindowPosChanged = 0x00000009,
+            SetState = 0x0000000A
+        }
+
+        internal enum AppBarEdge
+        {
+            Left = 0,
+            Top = 1,
+            Right = 2,
+            Bottom = 3
+        }
+
+        internal enum AppBarState
+        {
+            AutoHide = 0x00000001,
+            AlwaysOnTop = 0x00000002,
+            DockTop = 0x00000004,
+            DockBottom = 0x00000008,
+            DockLeft = 0x00000010,
+            DockRight = 0x00000020
+        }
+
+        // AppBar notification codes (wParam values for callback message)
+        internal const int ABN_STATECHANGE = 0x00000000;
+        internal const int ABN_POSCHANGED = 0x00000001;
+        internal const int ABN_FULLSCREENAPPNOTIFY = 0x00000002;
+        internal const int ABN_WINDOWARRANGE = 0x00000003;
+
         // Constants for context menu
         internal const uint TPM_RETURNCMD = 0x0100;
         internal const uint TPM_LEFTBUTTON = 0x0000;
         internal const int WH_KEYBOARD_LL = 13;
+        internal const int WH_MOUSE_LL = 14;
         internal const int WM_KEYDOWN = 0x0100;
         internal const int WM_KEYUP = 0x0101;
         internal const int WM_SYSKEYDOWN = 0x0104;
         internal const int WM_SYSKEYUP = 0x0105;
+        internal const int WM_MOUSEACTIVATE = 0x0021;
+        internal const int WM_ACTIVATEAPP = 0x001C;
+        internal const int WM_USER = 0x0400;
+        internal const int WM_LBUTTONDOWN = 0x0201;
+        internal const int WM_LBUTTONUP = 0x0202;
+        internal const int WM_RBUTTONDOWN = 0x0204;
+        internal const int WM_RBUTTONUP = 0x0205;
+        internal const int WM_MBUTTONDOWN = 0x0207;
+        internal const int WM_MBUTTONUP = 0x0208;
         internal const int VK_LWIN = 0x5B;
         internal const int VK_RWIN = 0x5C;
         internal const int SW_RESTORE = 9;
         internal const int SW_MINIMIZE = 6;
+
+        internal static int LOWORD(int value) => value & 0xFFFF;
+        internal static int HIWORD(int value) => (value >> 16) & 0xFFFF;
         internal static readonly Guid IID_IShellFolder = new Guid("000214E6-0000-0000-C000-000000000046");
         internal static readonly Guid IID_IContextMenu = new Guid("000214e4-0000-0000-c000-000000000046");
 
@@ -200,11 +295,23 @@ namespace win9xplorer
 
         internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
+        internal delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
         [StructLayout(LayoutKind.Sequential)]
         internal struct KBDLLHOOKSTRUCT
         {
             public uint vkCode;
             public uint scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct MSLLHOOKSTRUCT
+        {
+            public Point pt;
+            public uint mouseData;
             public uint flags;
             public uint time;
             public IntPtr dwExtraInfo;

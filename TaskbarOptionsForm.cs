@@ -15,6 +15,7 @@ namespace win9xplorer
         private readonly Panel taskbarBaseColorPreview;
         private readonly Panel taskbarLightColorPreview;
         private readonly Panel taskbarDarkColorPreview;
+        private readonly Panel taskbarFontColorPreview;
         private readonly Action openQuickLaunchFolderAction;
         private readonly Action exitAppAction;
 
@@ -36,11 +37,13 @@ namespace win9xplorer
 
         public float TaskbarFontSize => (float)fontSizeInput.Value;
 
+        public Color TaskbarFontColor => taskbarFontColorPreview.BackColor;
+
         public string TaskbarButtonStyle
         {
             get
             {
-                var selected = buttonStyleCombo.SelectedItem?.ToString() ?? "Classic";
+                var selected = buttonStyleCombo.SelectedItem?.ToString() ?? "Modern";
                 return selected switch
                 {
                     "Win98 Thick" => "Win98Thick",
@@ -68,6 +71,7 @@ namespace win9xplorer
             int currentTaskbarBevelSize,
             string currentTaskbarFontName,
             float currentTaskbarFontSize,
+            Color currentTaskbarFontColor,
             Color currentTaskbarBaseColor,
             Color currentTaskbarLightColor,
             Color currentTaskbarDarkColor,
@@ -83,7 +87,7 @@ namespace win9xplorer
             MinimizeBox = false;
             ShowInTaskbar = false;
             Text = "Taskbar Options";
-            ClientSize = new Size(360, 474);
+            ClientSize = new Size(360, 504);
             Font = new Font("MS Sans Serif", 8.25f, FontStyle.Regular, GraphicsUnit.Point);
 
             var lblStartMenuIcon = new Label
@@ -188,43 +192,56 @@ namespace win9xplorer
                 Value = Math.Clamp((decimal)currentTaskbarFontSize, 7m, 16m)
             };
 
-            var lblButtonStyle = new Label
+            var lblFontColor = new Label
             {
                 AutoSize = true,
                 Left = 12,
                 Top = 162,
+                Text = "Taskbar font color:"
+            };
+            taskbarFontColorPreview = CreateColorPreview(currentTaskbarFontColor, left: 156, top: 158);
+            var btnFontColor = CreateColorPickButton("...", left: 244, top: 156, onClick: () => PickColor(taskbarFontColorPreview));
+            var btnFontColorDefault = CreateColorPickButton("Default", left: 278, top: 156, onClick: () => taskbarFontColorPreview.BackColor = Color.Black);
+            btnFontColorDefault.Width = 70;
+
+            var lblButtonStyle = new Label
+            {
+                AutoSize = true,
+                Left = 12,
+                Top = 192,
                 Text = "Taskbar button style:"
             };
 
             buttonStyleCombo = new ComboBox
             {
                 Left = 156,
-                Top = 158,
+                Top = 188,
                 Width = 120,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
-            buttonStyleCombo.Items.AddRange(new object[] { "Classic", "Win98" });
+            buttonStyleCombo.Items.AddRange(new object[] { "Modern", "Win98" });
             var styleLabel = currentTaskbarButtonStyle switch
             {
                 "Win98Thick" => "Win98",
+                "Classic" => "Modern",
                 _ => currentTaskbarButtonStyle
             };
             buttonStyleCombo.SelectedItem = buttonStyleCombo.Items.Contains(styleLabel)
                 ? styleLabel
-                : "Classic";
+                : "Modern";
 
             var lblBevelSize = new Label
             {
                 AutoSize = true,
                 Left = 12,
-                Top = 192,
+                Top = 222,
                 Text = "Bevel size (px):"
             };
 
             bevelSizeInput = new NumericUpDown
             {
                 Left = 156,
-                Top = 188,
+                Top = 218,
                 Width = 80,
                 Minimum = 1,
                 Maximum = 4,
@@ -235,36 +252,36 @@ namespace win9xplorer
             {
                 AutoSize = true,
                 Left = 12,
-                Top = 222,
+                Top = 252,
                 Text = "Taskbar color:"
             };
-            taskbarBaseColorPreview = CreateColorPreview(currentTaskbarBaseColor, left: 156, top: 218);
-            var btnTaskbarBaseColor = CreateColorPickButton("...", left: 244, top: 216, onClick: () => PickColor(taskbarBaseColorPreview));
-            var btnTaskbarBaseColorDefault = CreateColorPickButton("Default", left: 278, top: 216, onClick: () => taskbarBaseColorPreview.BackColor = Color.FromArgb(192, 192, 192));
+            taskbarBaseColorPreview = CreateColorPreview(currentTaskbarBaseColor, left: 156, top: 248);
+            var btnTaskbarBaseColor = CreateColorPickButton("...", left: 244, top: 246, onClick: () => PickColor(taskbarBaseColorPreview));
+            var btnTaskbarBaseColorDefault = CreateColorPickButton("Default", left: 278, top: 246, onClick: () => taskbarBaseColorPreview.BackColor = Color.FromArgb(192, 192, 192));
             btnTaskbarBaseColorDefault.Width = 70;
 
             var lblTaskbarLightColor = new Label
             {
                 AutoSize = true,
                 Left = 12,
-                Top = 252,
+                Top = 282,
                 Text = "Light color:"
             };
-            taskbarLightColorPreview = CreateColorPreview(currentTaskbarLightColor, left: 156, top: 248);
-            var btnTaskbarLightColor = CreateColorPickButton("...", left: 244, top: 246, onClick: () => PickColor(taskbarLightColorPreview));
-            var btnTaskbarLightColorDefault = CreateColorPickButton("Default", left: 278, top: 246, onClick: () => taskbarLightColorPreview.BackColor = Color.FromArgb(255, 255, 255));
+            taskbarLightColorPreview = CreateColorPreview(currentTaskbarLightColor, left: 156, top: 278);
+            var btnTaskbarLightColor = CreateColorPickButton("...", left: 244, top: 276, onClick: () => PickColor(taskbarLightColorPreview));
+            var btnTaskbarLightColorDefault = CreateColorPickButton("Default", left: 278, top: 276, onClick: () => taskbarLightColorPreview.BackColor = Color.FromArgb(255, 255, 255));
             btnTaskbarLightColorDefault.Width = 70;
 
             var lblTaskbarDarkColor = new Label
             {
                 AutoSize = true,
                 Left = 12,
-                Top = 282,
+                Top = 312,
                 Text = "Dark color:"
             };
-            taskbarDarkColorPreview = CreateColorPreview(currentTaskbarDarkColor, left: 156, top: 278);
-            var btnTaskbarDarkColor = CreateColorPickButton("...", left: 244, top: 276, onClick: () => PickColor(taskbarDarkColorPreview));
-            var btnTaskbarDarkColorDefault = CreateColorPickButton("Default", left: 278, top: 276, onClick: () => taskbarDarkColorPreview.BackColor = Color.FromArgb(128, 128, 128));
+            taskbarDarkColorPreview = CreateColorPreview(currentTaskbarDarkColor, left: 156, top: 308);
+            var btnTaskbarDarkColor = CreateColorPickButton("...", left: 244, top: 306, onClick: () => PickColor(taskbarDarkColorPreview));
+            var btnTaskbarDarkColorDefault = CreateColorPickButton("Default", left: 278, top: 306, onClick: () => taskbarDarkColorPreview.BackColor = Color.FromArgb(128, 128, 128));
             btnTaskbarDarkColorDefault.Width = 70;
 
             lazyLoadProgramsCheckBox = new CheckBox
@@ -345,7 +362,7 @@ namespace win9xplorer
             {
                 Text = "Apply",
                 Left = 269,
-                Top = 444,
+                Top = 474,
                 Width = 75
             };
             btnApply.Click += (_, _) => ApplyRequested?.Invoke();
@@ -360,6 +377,10 @@ namespace win9xplorer
             Controls.Add(fontNameCombo);
             Controls.Add(lblFontSize);
             Controls.Add(fontSizeInput);
+            Controls.Add(lblFontColor);
+            Controls.Add(taskbarFontColorPreview);
+            Controls.Add(btnFontColor);
+            Controls.Add(btnFontColorDefault);
             Controls.Add(lblButtonStyle);
             Controls.Add(buttonStyleCombo);
             Controls.Add(lblBevelSize);

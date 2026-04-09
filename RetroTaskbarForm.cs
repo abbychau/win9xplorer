@@ -48,6 +48,10 @@ namespace win9xplorer
         private readonly Panel startHostPanel;
         private readonly Panel notificationAreaPanel;
         private readonly Button btnStart;
+        private IntPtr appBarHandle = IntPtr.Zero;
+        private bool isAppBarRegistered = false;
+        private bool isFullscreenActive = false;
+        private bool suppressFullscreenAutoDetect;
         private readonly FlowLayoutPanel quickLaunchPanel;
         private readonly FlowLayoutPanel taskButtonsPanel;
         private readonly FlowLayoutPanel trayIconsPanel;
@@ -83,6 +87,8 @@ namespace win9xplorer
         private IntPtr foregroundWindowBeforeTaskClick = IntPtr.Zero;
         private readonly WinApi.LowLevelKeyboardProc keyboardProc;
         private IntPtr keyboardHookHandle = IntPtr.Zero;
+        private readonly WinApi.LowLevelMouseProc mouseProc;
+        private IntPtr mouseHookHandle = IntPtr.Zero;
         private bool winKeyPressed;
         private bool nonWinKeyPressedWhileWinHeld;
         private readonly VolumePopupForm volumePopup;
@@ -95,11 +101,12 @@ namespace win9xplorer
         private int taskIconSize = DefaultTaskIconSize;
         private string taskbarFontName = "MS Sans Serif";
         private float taskbarFontSize = 8.25f;
+        private Color taskbarFontColor = Color.Black;
         private bool lazyLoadProgramsSubmenu = true;
         private bool playVolumeFeedbackSound = true;
         private int startMenuSubmenuOpenDelayMs = 200;
         private bool autoHideTaskbar;
-        private TaskbarButtonStyle taskbarButtonStyle = TaskbarButtonStyle.Classic;
+        private TaskbarButtonStyle taskbarButtonStyle = TaskbarButtonStyle.Modern;
         private int taskbarBevelSize = 1;
         private Color taskbarBaseColor = Color.FromArgb(192, 192, 192);
         private Color taskbarLightColor = Color.FromArgb(255, 255, 255);
@@ -118,7 +125,7 @@ namespace win9xplorer
         private sealed record ProgramSearchEntry(string DisplayName, string LaunchPath, bool IsShellApp);
         private enum TaskbarButtonStyle
         {
-            Classic,
+            Modern,
             Win98
         }
 
@@ -223,32 +230,7 @@ namespace win9xplorer
                 e.Graphics.DrawLine(lightPen, left, y + 1, right, y + 1);
             }
 
-            protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
-            {
-                if (e.Item == null || e.ArrowRectangle.IsEmpty)
-                {
-                    return;
-                }
-
-                var selected = e.Item.Selected && e.Item.Enabled;
-                var arrowColor = selected ? Color.White : Color.Black;
-
-                using var brush = new SolidBrush(arrowColor);
-                var rect = e.ArrowRectangle;
-                var midX = rect.X + rect.Width / 2;
-                var midY = rect.Y + rect.Height / 2;
-                var arrowSize = Math.Min(rect.Width, rect.Height) / 2;
-
-                // Draw a right-pointing triangle
-                var points = new[]
-                {
-                    new Point(midX - arrowSize / 2, midY - arrowSize / 2),
-                    new Point(midX - arrowSize / 2, midY + arrowSize / 2),
-                    new Point(midX + arrowSize / 2, midY)
-                };
-
-                e.Graphics.FillPolygon(brush, points);
-            }
+            // Note: Using native arrow rendering - no custom override needed
         }
 
         private int TaskbarButtonHeight => TaskbarRowHeight - TaskbarButtonVerticalPadding - TaskbarBottomPadding - 1;
@@ -275,6 +257,7 @@ namespace win9xplorer
             autoHideTaskbar = settings.AutoHideTaskbar;
             taskbarFontName = string.IsNullOrWhiteSpace(settings.TaskbarFontName) ? "MS Sans Serif" : settings.TaskbarFontName;
             taskbarFontSize = Math.Clamp(settings.TaskbarFontSize, 7f, 16f);
+            taskbarFontColor = ParseColorOrDefault(settings.TaskbarFontColor, Color.Black);
             taskbarLocked = settings.TaskbarLocked;
             taskbarRows = Math.Clamp(settings.TaskbarRows, 1, 3);
             taskbarBevelSize = Math.Clamp(settings.TaskbarBevelSize, 1, 4);
@@ -289,6 +272,10 @@ namespace win9xplorer
             {
                 taskbarButtonStyle = TaskbarButtonStyle.Win98;
                 taskbarBevelSize = Math.Max(taskbarBevelSize, 2);
+            }
+            else if (string.Equals(settings.TaskbarButtonStyle, "Classic", StringComparison.OrdinalIgnoreCase))
+            {
+                taskbarButtonStyle = TaskbarButtonStyle.Modern; // Migrate Classic to Modern
             }
             else if (string.Equals(settings.TaskbarButtonStyle, "Flat", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(settings.TaskbarButtonStyle, "Borderless", StringComparison.OrdinalIgnoreCase))
@@ -442,6 +429,7 @@ namespace win9xplorer
             };
             quickLaunchToolTip = new ToolTip();
             keyboardProc = KeyboardHookCallback;
+            mouseProc = MouseHookCallback;
             volumePopup = new VolumePopupForm();
             volumePopup.PlayFeedbackSoundOnMouseUp = playVolumeFeedbackSound;
             timeDetailsPopup = new TimeDetailsForm();
@@ -500,6 +488,145 @@ namespace win9xplorer
             Paint += RetroTaskbarForm_Paint;
         }
 
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == (int)WinApi.AppBarMsg.WindowPosChanged)
+            {
+                // Re-register AppBar when window position changes
+                RegisterAppBar();
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
+            // Handle AppBar callback message (fullscreen notifications, etc.)
+            if (m.Msg == (int)WinApi.WM_USER + 0x7FFF)
+            {
+                var notifyCode = m.WParam.ToInt32();
+                if (notifyCode == WinApi.ABN_FULLSCREENAPPNOTIFY)
+                {
+                    HandleFullscreenNotify(m.LParam);
+                }
+                else if (notifyCode == WinApi.ABN_POSCHANGED)
+                {
+                    // AppBar position changed - may need to re-register
+                    RegisterAppBar();
+                }
+                m.Result = IntPtr.Zero;
+                return;
+            }
+
+            base.WndProc(ref m);
+        }
+
+        private void RegisterAppBar()
+        {
+            var screenBounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1024, 768);
+            var appBarData = new WinApi.APPBARDATA
+            {
+                cbSize = (uint)Marshal.SizeOf<WinApi.APPBARDATA>(),
+                hWnd = Handle,
+                uCallbackMessage = (uint)WinApi.WM_USER + 0x7FFF, // Custom message
+                uEdge = (uint)WinApi.AppBarEdge.Bottom,
+                rc = new WinApi.RECT(
+                    screenBounds.Left,
+                    screenBounds.Bottom - TotalTaskbarHeight,
+                    screenBounds.Right,
+                    screenBounds.Bottom),
+                lParam = IntPtr.Zero
+            };
+
+            // Send ABM_NEW
+            var result = WinApi.SHAppBarMessage((uint)WinApi.AppBarMsg.New, ref appBarData);
+            appBarHandle = result;
+
+            if (result != IntPtr.Zero)
+            {
+                isAppBarRegistered = true;
+                // Update bounds from AppBar response
+                Bounds = appBarData.rc.ToRectangle();
+            }
+        }
+
+        private void UnregisterAppBar()
+        {
+            if (isAppBarRegistered && appBarHandle != IntPtr.Zero)
+            {
+                var appBarData = new WinApi.APPBARDATA
+                {
+                    cbSize = (uint)Marshal.SizeOf<WinApi.APPBARDATA>(),
+                    hWnd = Handle,
+                    uCallbackMessage = (uint)WinApi.WM_USER + 0x7FFF,
+                    uEdge = (uint)WinApi.AppBarEdge.Bottom,
+                    rc = new WinApi.RECT(0, 0, 0, 0),
+                    lParam = IntPtr.Zero
+                };
+
+                WinApi.SHAppBarMessage((uint)WinApi.AppBarMsg.Remove, ref appBarData);
+                appBarHandle = IntPtr.Zero;
+                isAppBarRegistered = false;
+            }
+        }
+
+        private void HandleFullscreenNotify(IntPtr lParam)
+        {
+            // ABN_FULLSCREENAPPNOTIFY: lParam = TRUE means entering fullscreen, FALSE means exiting
+            var enteringFullscreen = lParam.ToInt32() != 0;
+            suppressFullscreenAutoDetect = true;
+            SetFullscreenState(enteringFullscreen);
+        }
+
+        private void SetFullscreenState(bool isFullscreen)
+        {
+            if (isFullscreen && !isFullscreenActive)
+            {
+                isFullscreenActive = true;
+                if (Visible)
+                {
+                    Hide();
+                }
+            }
+            else if (!isFullscreen && isFullscreenActive)
+            {
+                isFullscreenActive = false;
+                if (!Visible)
+                {
+                    Show();
+                }
+            }
+        }
+
+        private void DetectFullscreenWindow()
+        {
+            if (suppressFullscreenAutoDetect)
+            {
+                suppressFullscreenAutoDetect = false;
+                return;
+            }
+
+            var foregroundHandle = WinApi.GetForegroundWindow();
+            if (foregroundHandle == IntPtr.Zero || foregroundHandle == Handle || WinApi.IsIconic(foregroundHandle))
+            {
+                SetFullscreenState(false);
+                return;
+            }
+
+            if (!WinApi.GetWindowRect(foregroundHandle, out var foregroundRect))
+            {
+                SetFullscreenState(false);
+                return;
+            }
+
+            var screenBounds = Screen.FromHandle(foregroundHandle).Bounds;
+            const int tolerance = 2;
+            var isFullscreen =
+                foregroundRect.Left <= screenBounds.Left + tolerance &&
+                foregroundRect.Top <= screenBounds.Top + tolerance &&
+                foregroundRect.Right >= screenBounds.Right - tolerance &&
+                foregroundRect.Bottom >= screenBounds.Bottom - tolerance;
+
+            SetFullscreenState(isFullscreen);
+        }
+
         public static RetroTaskbarForm GetOrCreate()
         {
             if (instance == null || instance.IsDisposed)
@@ -514,8 +641,10 @@ namespace win9xplorer
         {
             TrySetExplorerTaskbarHidden(true);
             InstallKeyboardHook();
+            InstallMouseHook();
             InitializeTrayService();
             InitializeQuickLaunchWatcher();
+            RegisterAppBar(); // Register as AppBar to reserve desktop space
             SetTaskbarBounds();
             RefreshTaskbar();
             refreshTimer.Start();
@@ -579,6 +708,8 @@ namespace win9xplorer
             volumePopup.Dispose();
             timeDetailsPopup.Dispose();
             UninstallKeyboardHook();
+            UninstallMouseHook();
+            UnregisterAppBar(); // Unregister AppBar before cleanup
             DisposeQuickLaunchWatcher();
             TeardownTrayService();
 
@@ -928,6 +1059,9 @@ namespace win9xplorer
 
             var item = CreateMenuItem(displayName, folderMenuIcon, null);
 
+            // Ensure the dropdown uses our custom renderer
+            SetupMenuItemRenderer(item);
+
             if (lazyLoadChildren)
             {
                 item.Tag = new ProgramMenuNode(folderPath, depth);
@@ -1094,7 +1228,8 @@ namespace win9xplorer
                 .DefaultIfEmpty(140)
                 .Max();
             var imageSpace = startMenuIconSize + 26;
-            var itemWidth = Math.Clamp(maxMeasuredWidth + imageSpace, 170, 360);
+            var arrowSpace = items.Cast<ToolStripItem>().Any(item => item.Available && item is ToolStripMenuItem menuItem && menuItem.HasDropDownItems) ? 20 : 0;
+            var itemWidth = Math.Clamp(maxMeasuredWidth + imageSpace + arrowSpace, 170, 380);
             var targetWidth = (itemWidth * columns) + 12;
 
             dropDown.LayoutStyle = ToolStripLayoutStyle.Flow;
@@ -1900,12 +2035,72 @@ namespace win9xplorer
             quickLaunchWatcher.Renamed += QuickLaunchWatcher_Renamed;
         }
 
-        private static void ApplyWin9xContextMenuStyle(ContextMenuStrip menu)
+        private void ApplyWin9xContextMenuStyle(ContextMenuStrip menu)
         {
-            menu.RenderMode = ToolStripRenderMode.Professional;
-            menu.Renderer = Win9xMenuRenderer;
-            menu.ShowImageMargin = menu.ShowImageMargin;
-            menu.DropShadowEnabled = false;
+            if (taskbarButtonStyle == TaskbarButtonStyle.Modern)
+            {
+                // Use default .NET renderer for Modern style
+                menu.RenderMode = ToolStripRenderMode.System;
+                menu.Renderer = null;
+                menu.DropShadowEnabled = true;
+
+                // Remove any custom renderer setup
+                foreach (ToolStripItem item in menu.Items)
+                {
+                    if (item is ToolStripMenuItem menuItem)
+                    {
+                        RemoveCustomMenuItemRenderer(menuItem);
+                    }
+                }
+            }
+            else
+            {
+                // Use custom Win9x renderer for Win98 style
+                menu.RenderMode = ToolStripRenderMode.Professional;
+                menu.Renderer = Win9xMenuRenderer;
+                menu.ShowImageMargin = menu.ShowImageMargin;
+                menu.DropShadowEnabled = false;
+
+                // Apply renderer to all submenus when they open
+                foreach (ToolStripItem item in menu.Items)
+                {
+                    if (item is ToolStripMenuItem menuItem)
+                    {
+                        SetupMenuItemRenderer(menuItem);
+                    }
+                }
+            }
+        }
+
+        private static void SetupMenuItemRenderer(ToolStripMenuItem menuItem)
+        {
+            // Set up renderer for the dropdown BEFORE it opens
+            menuItem.DropDownOpening += (s, e) =>
+            {
+                if (menuItem.DropDown is ToolStripDropDown dropDown)
+                {
+                    dropDown.RenderMode = ToolStripRenderMode.Professional;
+                    dropDown.Renderer = Win9xMenuRenderer;
+                    dropDown.DropShadowEnabled = false;
+
+                    // Recursively apply to all nested menu items
+                    foreach (ToolStripItem subItem in dropDown.Items.OfType<ToolStripMenuItem>())
+                    {
+                        SetupMenuItemRenderer((ToolStripMenuItem)subItem);
+                    }
+                }
+            };
+        }
+
+        private static void RemoveCustomMenuItemRenderer(ToolStripMenuItem menuItem)
+        {
+            // Remove custom renderer setup - use system default
+            menuItem.DropDownOpening -= null;
+
+            foreach (ToolStripItem subItem in menuItem.DropDownItems.OfType<ToolStripMenuItem>())
+            {
+                RemoveCustomMenuItemRenderer((ToolStripMenuItem)subItem);
+            }
         }
 
         private void DisposeQuickLaunchWatcher()
@@ -1963,6 +2158,7 @@ namespace win9xplorer
                 TaskbarButtonStyle = taskbarButtonStyle.ToString(),
                 TaskbarFontName = taskbarFontName,
                 TaskbarFontSize = taskbarFontSize,
+                TaskbarFontColor = ColorTranslator.ToHtml(taskbarFontColor),
                 TaskbarLocked = taskbarLocked,
                 TaskbarRows = taskbarRows,
                 TaskbarBaseColor = ColorTranslator.ToHtml(taskbarBaseColor),
@@ -2012,7 +2208,9 @@ namespace win9xplorer
 
             Font = normalFont;
             lblClock.Font = normalFont;
+            lblClock.ForeColor = taskbarFontColor;
             btnStart.Font = activeFont;
+            btnStart.ForeColor = taskbarFontColor;
             btnStart.Height = TaskbarButtonHeight;
 
             taskWindowMenu.Font = normalFont;
@@ -2020,6 +2218,23 @@ namespace win9xplorer
             clockContextMenu.Font = normalFont;
             quickLaunchItemContextMenu.Font = normalFont;
             startMenu.Font = normalFont;
+
+            // Update all task buttons
+            foreach (var button in taskButtons.Values)
+            {
+                button.Font = normalFont;
+                button.ForeColor = taskbarFontColor;
+            }
+
+            // Update all Quick Launch buttons
+            foreach (Control control in quickLaunchPanel.Controls)
+            {
+                if (control is Button button)
+                {
+                    button.Font = normalFont;
+                    button.ForeColor = taskbarFontColor;
+                }
+            }
         }
 
         private void RefreshTaskbarColors()
@@ -2055,10 +2270,14 @@ namespace win9xplorer
                     button.Paint += TaskbarButtonWin98_Paint;
                     button.UseVisualStyleBackColor = false;
                     button.BackColor = taskbarBaseColor;
+                    button.Padding = new Padding(0);
                     break;
+                case TaskbarButtonStyle.Modern:
                 default:
                     button.FlatStyle = FlatStyle.Standard;
                     button.UseVisualStyleBackColor = true;
+                    button.Padding = new Padding(1); // +1 padding for Modern
+                    button.Margin = new Padding(0, 0, TaskbarButtonGap, 0);
                     break;
             }
 
@@ -2328,18 +2547,31 @@ namespace win9xplorer
             button.MouseLeave -= QuickLaunchButton_StateChangedVisual;
             button.LostFocus -= QuickLaunchButton_StateChangedVisual;
             button.MouseCaptureChanged -= QuickLaunchButton_StateChangedVisual;
-            button.FlatStyle = FlatStyle.Flat;
-            button.FlatAppearance.BorderSize = 0;
-            button.FlatAppearance.MouseOverBackColor = taskbarBaseColor;
-            button.FlatAppearance.MouseDownBackColor = taskbarBaseColor;
-            button.UseVisualStyleBackColor = false;
-            button.BackColor = taskbarBaseColor;
-            button.Paint += QuickLaunchButton_Paint;
-            button.MouseDown += QuickLaunchButton_MouseDownVisual;
-            button.MouseUp += QuickLaunchButton_MouseUpVisual;
-            button.MouseLeave += QuickLaunchButton_StateChangedVisual;
-            button.LostFocus += QuickLaunchButton_StateChangedVisual;
-            button.MouseCaptureChanged += QuickLaunchButton_StateChangedVisual;
+
+            switch (taskbarButtonStyle)
+            {
+                case TaskbarButtonStyle.Win98:
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.FlatAppearance.BorderSize = 0;
+                    button.FlatAppearance.MouseOverBackColor = taskbarBaseColor;
+                    button.FlatAppearance.MouseDownBackColor = taskbarBaseColor;
+                    button.UseVisualStyleBackColor = false;
+                    button.BackColor = taskbarBaseColor;
+                    button.Padding = new Padding(0);
+                    button.Paint += QuickLaunchButton_Paint;
+                    button.MouseDown += QuickLaunchButton_MouseDownVisual;
+                    button.MouseUp += QuickLaunchButton_MouseUpVisual;
+                    button.MouseLeave += QuickLaunchButton_StateChangedVisual;
+                    button.LostFocus += QuickLaunchButton_StateChangedVisual;
+                    button.MouseCaptureChanged += QuickLaunchButton_StateChangedVisual;
+                    break;
+                case TaskbarButtonStyle.Modern:
+                default:
+                    button.FlatStyle = FlatStyle.Standard;
+                    button.UseVisualStyleBackColor = true;
+                    button.Padding = new Padding(1); // +1 padding for Modern
+                    break;
+            }
         }
 
         private void AttachNoFocusCue(Button button)
@@ -2924,6 +3156,7 @@ namespace win9xplorer
                 taskbarBevelSize,
                 taskbarFontName,
                 taskbarFontSize,
+                taskbarFontColor,
                 taskbarBaseColor,
                 taskbarLightColor,
                 taskbarDarkColor,
@@ -2949,6 +3182,7 @@ namespace win9xplorer
             taskbarBevelSize = Math.Clamp(dialog.TaskbarBevelSize, 1, 4);
             taskbarFontName = dialog.TaskbarFontName;
             taskbarFontSize = dialog.TaskbarFontSize;
+            taskbarFontColor = dialog.TaskbarFontColor;
             taskbarBaseColor = dialog.TaskbarBaseColor;
             taskbarLightColor = dialog.TaskbarLightColor;
             taskbarDarkColor = dialog.TaskbarDarkColor;
@@ -3079,6 +3313,17 @@ namespace win9xplorer
             btnStart.Invalidate();
         }
 
+        private void CloseStartMenuIfVisible()
+        {
+            if (startMenu.Visible)
+            {
+                startMenu.Hide();
+                ResetStartMenuSearch();
+                ResetStartMenuSubmenuSessionCache();
+                btnStart.Invalidate();
+            }
+        }
+
         private void RepositionVisibleStartMenu()
         {
             if (!startMenu.Visible)
@@ -3128,6 +3373,31 @@ namespace win9xplorer
 
             WinApi.UnhookWindowsHookEx(keyboardHookHandle);
             keyboardHookHandle = IntPtr.Zero;
+        }
+
+        private void InstallMouseHook()
+        {
+            if (mouseHookHandle != IntPtr.Zero)
+            {
+                return;
+            }
+
+            mouseHookHandle = WinApi.SetWindowsHookEx(WinApi.WH_MOUSE_LL, mouseProc, IntPtr.Zero, 0);
+            if (mouseHookHandle == IntPtr.Zero)
+            {
+                Debug.WriteLine("Failed to install mouse hook.");
+            }
+        }
+
+        private void UninstallMouseHook()
+        {
+            if (mouseHookHandle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            WinApi.UnhookWindowsHookEx(mouseHookHandle);
+            mouseHookHandle = IntPtr.Zero;
         }
 
         private void InitializeTrayService()
@@ -3651,6 +3921,78 @@ namespace win9xplorer
             return WinApi.CallNextHookEx(keyboardHookHandle, nCode, wParam, lParam);
         }
 
+        private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && startMenu.Visible)
+            {
+                var message = wParam.ToInt32();
+                if (message == WinApi.WM_LBUTTONDOWN || message == WinApi.WM_RBUTTONDOWN || message == WinApi.WM_MBUTTONDOWN)
+                {
+                    var mouseInfo = Marshal.PtrToStructure<WinApi.MSLLHOOKSTRUCT>(lParam);
+                    var clickPoint = mouseInfo.pt;
+
+                    // Check if click is within the start menu or any of its dropdowns
+                    if (!IsPointInStartMenuOrDropDowns(clickPoint))
+                    {
+                        // Click is outside - close the start menu
+                        BeginInvoke(new Action(CloseStartMenuIfVisible));
+                    }
+                }
+            }
+
+            return WinApi.CallNextHookEx(mouseHookHandle, nCode, wParam, lParam);
+        }
+
+        private bool IsPointInStartMenuOrDropDowns(Point point)
+        {
+            // Check main start menu
+            if (startMenu.Visible)
+            {
+                var menuBounds = new Rectangle(startMenu.Location, startMenu.Size);
+                if (menuBounds.Contains(point))
+                    return true;
+            }
+
+            // Check all open dropdowns by looking at ToolStripItem with open DropDowns
+            foreach (ToolStripItem item in startMenu.Items)
+            {
+                if (item is ToolStripMenuItem menuItem && menuItem.DropDown is { Visible: true } dropDown)
+                {
+                    var dropDownBounds = new Rectangle(dropDown.Location, dropDown.Size);
+                    if (dropDownBounds.Contains(point))
+                        return true;
+
+                    // Recursively check nested dropdowns
+                    if (HasNestedDropDowns(dropDown, point))
+                        return true;
+                }
+            }
+
+            // Check taskbar (clicking on taskbar should not close start menu)
+            var taskbarBounds = RectangleToScreen(ClientRectangle);
+            if (taskbarBounds.Contains(point))
+                return true;
+
+            return false;
+        }
+
+        private static bool HasNestedDropDowns(ToolStripDropDown menu, Point point)
+        {
+            foreach (ToolStripItem item in menu.Items)
+            {
+                if (item is ToolStripMenuItem menuItem && menuItem.DropDown is { Visible: true } dropDown)
+                {
+                    var dropDownBounds = new Rectangle(dropDown.Location, dropDown.Size);
+                    if (dropDownBounds.Contains(point))
+                        return true;
+
+                    if (HasNestedDropDowns(dropDown, point))
+                        return true;
+                }
+            }
+            return false;
+        }
+
         private void BringExplorerToFront()
         {
             var explorer = new Form1();
@@ -3661,6 +4003,7 @@ namespace win9xplorer
 
         private void RefreshTaskbar()
         {
+            DetectFullscreenWindow();
             SetTaskbarBounds();
             lblClock.Text = DateTime.Now.ToString("h:mm tt");
 
@@ -3790,7 +4133,8 @@ namespace win9xplorer
                 TextAlign = ContentAlignment.MiddleLeft,
                 TextImageRelation = TextImageRelation.ImageBeforeText,
                 ImageAlign = ContentAlignment.MiddleLeft,
-                Font = normalFont
+                Font = normalFont,
+                ForeColor = taskbarFontColor
             };
             ApplyTaskbarButtonStyle(button);
             AttachNoFocusCue(button);
@@ -4033,7 +4377,25 @@ namespace win9xplorer
 
             if (Bounds != newBounds)
             {
-                Bounds = newBounds;
+                if (isAppBarRegistered)
+                {
+                    // Use AppBar API to set position
+                    var appBarData = new WinApi.APPBARDATA
+                    {
+                        cbSize = (uint)Marshal.SizeOf<WinApi.APPBARDATA>(),
+                        hWnd = Handle,
+                        uCallbackMessage = (uint)WinApi.WM_USER + 0x7FFF,
+                        uEdge = (uint)WinApi.AppBarEdge.Bottom,
+                        rc = new WinApi.RECT(newBounds.Left, newBounds.Top, newBounds.Right, newBounds.Bottom),
+                        lParam = IntPtr.Zero
+                    };
+                    WinApi.SHAppBarMessage((uint)WinApi.AppBarMsg.SetPos, ref appBarData);
+                    Bounds = appBarData.rc.ToRectangle();
+                }
+                else
+                {
+                    Bounds = newBounds;
+                }
                 UpdateTrayHostSizeData();
             }
         }
