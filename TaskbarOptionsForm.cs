@@ -87,7 +87,7 @@ namespace win9xplorer
             MinimizeBox = false;
             ShowInTaskbar = false;
             Text = "Taskbar Options";
-            ClientSize = new Size(360, 504);
+            ClientSize = new Size(360, 534);
             Font = new Font("MS Sans Serif", 8.25f, FontStyle.Regular, GraphicsUnit.Point);
 
             var lblStartMenuIcon = new Label
@@ -287,7 +287,7 @@ namespace win9xplorer
             lazyLoadProgramsCheckBox = new CheckBox
             {
                 Left = 12,
-                Top = 312,
+                Top = 338,
                 Width = 336,
                 Text = "Lazy-load Programs submenu",
                 Checked = currentLazyLoadProgramsSubmenu
@@ -296,7 +296,7 @@ namespace win9xplorer
             var lazyLoadHintLabel = new Label
             {
                 Left = 28,
-                Top = 334,
+                Top = 360,
                 Width = 320,
                 Height = 24,
                 Text = "On: faster Start open; Off: faster Programs expand"
@@ -305,7 +305,7 @@ namespace win9xplorer
             playVolumeFeedbackSoundCheckBox = new CheckBox
             {
                 Left = 12,
-                Top = 360,
+                Top = 386,
                 Width = 336,
                 Text = "Play feedback sound on volume slider release",
                 Checked = currentPlayVolumeFeedbackSound
@@ -314,7 +314,7 @@ namespace win9xplorer
             autoHideTaskbarCheckBox = new CheckBox
             {
                 Left = 12,
-                Top = 388,
+                Top = 414,
                 Width = 336,
                 Text = "Auto-hide taskbar",
                 Checked = currentAutoHideTaskbar
@@ -323,7 +323,7 @@ namespace win9xplorer
             var openQuickLaunchFolderButton = new Button
             {
                 Left = 12,
-                Top = 416,
+                Top = 442,
                 Width = 236,
                 Height = 24,
                 Text = "Open Quick Launch Folder..."
@@ -334,7 +334,7 @@ namespace win9xplorer
             {
                 Text = "Exit App",
                 Left = 258,
-                Top = 416,
+                Top = 442,
                 Width = 90,
                 Height = 24
             };
@@ -344,7 +344,7 @@ namespace win9xplorer
             {
                 Text = "OK",
                 Left = 107,
-                Top = 444,
+                Top = 478,
                 Width = 75,
                 DialogResult = DialogResult.OK
             };
@@ -353,7 +353,7 @@ namespace win9xplorer
             {
                 Text = "Cancel",
                 Left = 188,
-                Top = 444,
+                Top = 478,
                 Width = 75,
                 DialogResult = DialogResult.Cancel
             };
@@ -362,7 +362,7 @@ namespace win9xplorer
             {
                 Text = "Apply",
                 Left = 269,
-                Top = 474,
+                Top = 478,
                 Width = 75
             };
             btnApply.Click += (_, _) => ApplyRequested?.Invoke();

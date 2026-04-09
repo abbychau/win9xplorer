@@ -29,6 +29,8 @@ namespace win9xplorer
         private const int StartMenuSearchResetSeconds = 2;
         private const int MultiColumnThreshold = 22;
         private const int MaxSubmenuColumns = 3;
+        private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_APPWINDOW = 0x00040000;
         private static readonly string[] ProgramLaunchPatterns =
         {
             "*.lnk",
@@ -242,6 +244,17 @@ namespace win9xplorer
         private int ResizeGripHeight => Math.Max(ResizeGripMinHeight, taskbarBevelSize);
 
         private int TotalTaskbarHeight => ExpandedTaskbarHeight + ResizeGripHeight;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var createParams = base.CreateParams;
+                createParams.ExStyle |= WS_EX_TOOLWINDOW;
+                createParams.ExStyle &= ~WS_EX_APPWINDOW;
+                return createParams;
+            }
+        }
 
         public RetroTaskbarForm()
         {
@@ -571,6 +584,11 @@ namespace win9xplorer
         {
             // ABN_FULLSCREENAPPNOTIFY: lParam = TRUE means entering fullscreen, FALSE means exiting
             var enteringFullscreen = lParam.ToInt32() != 0;
+            if (enteringFullscreen && IsAltKeyDown())
+            {
+                return;
+            }
+
             suppressFullscreenAutoDetect = true;
             SetFullscreenState(enteringFullscreen);
         }
@@ -597,6 +615,11 @@ namespace win9xplorer
 
         private void DetectFullscreenWindow()
         {
+            if (IsAltKeyDown())
+            {
+                return;
+            }
+
             if (suppressFullscreenAutoDetect)
             {
                 suppressFullscreenAutoDetect = false;
@@ -626,6 +649,8 @@ namespace win9xplorer
 
             SetFullscreenState(isFullscreen);
         }
+
+        private static bool IsAltKeyDown() => (WinApi.GetAsyncKeyState(WinApi.VK_MENU) & 0x8000) != 0;
 
         public static RetroTaskbarForm GetOrCreate()
         {

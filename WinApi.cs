@@ -65,6 +65,9 @@ namespace win9xplorer
         [DllImport("user32.dll")]
         internal static extern bool IsIconic(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        internal static extern short GetAsyncKeyState(int vKey);
+
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
@@ -176,6 +179,7 @@ namespace win9xplorer
         internal const int WM_RBUTTONUP = 0x0205;
         internal const int WM_MBUTTONDOWN = 0x0207;
         internal const int WM_MBUTTONUP = 0x0208;
+        internal const int VK_MENU = 0x12;
         internal const int VK_LWIN = 0x5B;
         internal const int VK_RWIN = 0x5C;
         internal const int SW_RESTORE = 9;
