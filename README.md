@@ -47,15 +47,6 @@ Double Bevel (Classic Style)
 
 **Native, No Web / WPF** - For the best responsiveness and memory usage.
 
-## Features
-
-- **Classic File Explorer** – Two-pane folder browser with TreeView and ListView, supporting drag-and-drop file operations, context menus, and address bar navigation
-- **Retro Taskbar** – Authentic Win9x-style taskbar with Start menu, Quick Launch, running programs, and system tray
-- **Windows XP Icons** – Uses authentic Windows XP icon set with fallback to shell32.dll
-- **Custom Rendering** – Win9xMenuRenderer for genuine 3D bevels, colors, and menu styling
-- **Bookmarks & History** – Navigation history with back/forward, favorites sidebar
-- **Persistent Settings** – Registry-based configuration saves window layout, toolbar positions, and preferences
-
 ## Usage
 
 ### Running the Application
