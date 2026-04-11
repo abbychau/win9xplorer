@@ -1,0 +1,28 @@
+Windows XP Icons/Add Network Place.png
+Windows XP Icons/Additional Settings.png
+Windows XP Icons/Address Book.png
+Windows XP Icons/Application Window.png
+Windows XP Icons/Audio Devices.png
+Windows XP Icons/Back.png
+Windows XP Icons/Checklist.png
+Windows XP Icons/Desktop.png
+Windows XP Icons/Detail View.png
+Windows XP Icons/Double Click.png
+Windows XP Icons/Explorer Delete.png
+Windows XP Icons/Explorer.png
+Windows XP Icons/Favorites.png
+Windows XP Icons/Folder Closed.png
+Windows XP Icons/Folder View - Classic.png
+Windows XP Icons/Folder View - Common Tasks.png
+Windows XP Icons/Forward.png
+Windows XP Icons/Go.png
+Windows XP Icons/Icon View.png
+Windows XP Icons/IE Refresh.png
+Windows XP Icons/My Documents.png
+Windows XP Icons/Open.png
+Windows XP Icons/Run.png
+Windows XP Icons/Start Menu Programs.png
+Windows XP Icons/Taskbar and Start Menu.png
+Windows XP Icons/Thumbnail View.png
+Windows XP Icons/Tile View.png
+Windows XP Icons/Up.png

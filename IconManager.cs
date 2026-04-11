@@ -109,15 +109,13 @@ namespace win9xplorer
         {
             Debug.WriteLine("=== Starting SetupToolbarIcons ===");
             
-            // First try to load Windows XP icons from the "Windows XP Icons" folder
+            // First try embedded Windows XP icons, then file-system fallback
             try
             {
                 string? iconsFolder = FindWindowsXPIconsFolder();
                 if (string.IsNullOrEmpty(iconsFolder))
                 {
-                    Debug.WriteLine("Windows XP Icons folder not found in any expected location");
-                    SetupShellIconsToolbar(btnBack, btnForward, btnUp, btnRefresh, btnViewLargeIcons, btnViewSmallIcons, btnViewList, btnViewDetails);
-                    return;
+                    Debug.WriteLine("Windows XP Icons folder not found. Embedded resources only.");
                 }
 
                 // Navigation icons using Windows XP style icons with multiple filename attempts
@@ -158,7 +156,7 @@ namespace win9xplorer
             Debug.WriteLine("=== SetupToolbarIcons Completed ===");
         }
 
-        private Bitmap? LoadWindowsXPIconWithAlternatives(string iconsFolder, string[] iconFileNames, string buttonName, int size = 16)
+        private Bitmap? LoadWindowsXPIconWithAlternatives(string? iconsFolder, string[] iconFileNames, string buttonName, int size = 16)
         {
             foreach (string iconFileName in iconFileNames)
             {
@@ -174,10 +172,21 @@ namespace win9xplorer
             return null;
         }
 
-        private Bitmap? LoadWindowsXPIcon(string iconsFolder, string iconFileName, int size = 16)
+        private Bitmap? LoadWindowsXPIcon(string? iconsFolder, string iconFileName, int size = 16)
         {
             try
             {
+                var embedded = LoadWindowsXPIconFromEmbedded(iconFileName, size);
+                if (embedded != null)
+                {
+                    return embedded;
+                }
+
+                if (string.IsNullOrWhiteSpace(iconsFolder))
+                {
+                    return null;
+                }
+
                 string iconsPath = Path.Combine(iconsFolder, iconFileName);
                 
                 // Check if the icon file exists
@@ -227,6 +236,47 @@ namespace win9xplorer
             {
                 Debug.WriteLine($"Error loading Windows XP icon {iconFileName}: {ex.Message}");
                 Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+                return null;
+            }
+        }
+
+        private static Bitmap? LoadWindowsXPIconFromEmbedded(string iconFileName, int size)
+        {
+            try
+            {
+                var assembly = typeof(IconManager).Assembly;
+                var resourceName = assembly
+                    .GetManifestResourceNames()
+                    .FirstOrDefault(name =>
+                        name.EndsWith(iconFileName, StringComparison.OrdinalIgnoreCase) &&
+                        (name.Contains("Windows XP Icons", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("Windows_XP_Icons", StringComparison.OrdinalIgnoreCase)));
+
+                if (string.IsNullOrWhiteSpace(resourceName))
+                {
+                    return null;
+                }
+
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream == null)
+                {
+                    return null;
+                }
+
+                using var originalImage = Image.FromStream(stream);
+                var bitmap = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using var g = Graphics.FromImage(bitmap);
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.SmoothingMode = SmoothingMode.HighQuality;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.CompositingQuality = CompositingQuality.HighQuality;
+                g.CompositingMode = CompositingMode.SourceOver;
+                g.Clear(Color.Transparent);
+                g.DrawImage(originalImage, new Rectangle(0, 0, size, size), new Rectangle(0, 0, originalImage.Width, originalImage.Height), GraphicsUnit.Pixel);
+                return bitmap;
+            }
+            catch
+            {
                 return null;
             }
         }
@@ -288,7 +338,7 @@ namespace win9xplorer
             };
 
             string? iconsFolder = FindWindowsXPIconsFolder();
-            if (!string.IsNullOrEmpty(iconsFolder) && candidates.Length > 0)
+            if (candidates.Length > 0)
             {
                 Bitmap? loaded = LoadWindowsXPIconWithAlternatives(iconsFolder, candidates, viewType, size);
                 if (loaded != null)
@@ -440,11 +490,6 @@ namespace win9xplorer
             }
 
             string? iconsFolder = FindWindowsXPIconsFolder();
-            if (string.IsNullOrEmpty(iconsFolder))
-            {
-                return null;
-            }
-
             return LoadWindowsXPIconWithAlternatives(iconsFolder, candidates, iconType, size);
         }
 
@@ -480,37 +525,33 @@ namespace win9xplorer
             };
 
             string? iconsFolder = FindWindowsXPIconsFolder();
-            if (!string.IsNullOrEmpty(iconsFolder))
+            foreach (string iconFileName in appIconCandidates)
             {
-                foreach (string iconFileName in appIconCandidates)
+                using var sourceImage = LoadWindowsXPIcon(iconsFolder, iconFileName, 32);
+                if (sourceImage == null)
                 {
-                    string iconPath = Path.Combine(iconsFolder, iconFileName);
-                    if (!File.Exists(iconPath))
-                    {
-                        continue;
-                    }
+                    continue;
+                }
 
-                    using var sourceImage = Image.FromFile(iconPath);
-                    using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                    using (var graphics = Graphics.FromImage(bitmap))
-                    {
-                        graphics.Clear(Color.Transparent);
-                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        graphics.SmoothingMode = SmoothingMode.HighQuality;
-                        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        graphics.DrawImage(sourceImage, new Rectangle(0, 0, 32, 32));
-                    }
+                using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (var graphics = Graphics.FromImage(bitmap))
+                {
+                    graphics.Clear(Color.Transparent);
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.SmoothingMode = SmoothingMode.HighQuality;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    graphics.DrawImage(sourceImage, new Rectangle(0, 0, 32, 32));
+                }
 
-                    IntPtr hIcon = bitmap.GetHicon();
-                    try
-                    {
-                        using var temporaryIcon = Icon.FromHandle(hIcon);
-                        return (Icon)temporaryIcon.Clone();
-                    }
-                    finally
-                    {
-                        WinApi.DestroyIcon(hIcon);
-                    }
+                IntPtr hIcon = bitmap.GetHicon();
+                try
+                {
+                    using var temporaryIcon = Icon.FromHandle(hIcon);
+                    return (Icon)temporaryIcon.Clone();
+                }
+                finally
+                {
+                    WinApi.DestroyIcon(hIcon);
                 }
             }
 

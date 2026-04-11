@@ -52,6 +52,12 @@ namespace win9xplorer
         internal static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
+        internal static extern IntPtr GetShellWindow();
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        internal static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
         internal static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
         internal const uint GW_OWNER = 4;
@@ -64,6 +70,10 @@ namespace win9xplorer
 
         [DllImport("user32.dll")]
         internal static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
 
         [DllImport("user32.dll")]
         internal static extern short GetAsyncKeyState(int vKey);

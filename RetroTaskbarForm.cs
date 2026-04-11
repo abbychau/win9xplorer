@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using Microsoft.Win32;
+using Microsoft.VisualBasic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Media.Imaging;
@@ -16,7 +18,6 @@ namespace win9xplorer
     internal sealed class RetroTaskbarForm : Form
     {
         private static RetroTaskbarForm? instance;
-        private static readonly ToolStripRenderer Win9xMenuRenderer = new Win9xMenuRendererImpl();
         private const int TaskbarRowHeight = 30;
         private const int TaskbarButtonVerticalPadding = 2;
         private const int TaskbarBottomPadding = 0;
@@ -25,6 +26,9 @@ namespace win9xplorer
         private const int RefreshIntervalMs = 120;
         private const int DefaultStartMenuIconSize = 16;
         private const int DefaultTaskIconSize = 16;
+        private const int TaskButtonMaxWidth = 220;
+        private const int TaskButtonMinWidthMultiRow = 120;
+        private const int TaskButtonRowBottomGap = 1;
         private const int ProgramMenuMaxDepth = 4;
         private const int StartMenuSearchResetSeconds = 2;
         private const int MultiColumnThreshold = 22;
@@ -48,8 +52,17 @@ namespace win9xplorer
         private readonly Panel resizeGripPanel;
         private readonly Panel contentPanel;
         private readonly Panel startHostPanel;
+        private readonly Panel taskButtonsHostPanel;
+        private readonly Panel addressToolbarPanel;
+        private readonly Panel startToolbarSeparatorPanel;
+        private readonly Panel toolbarsSeparatorPanel;
+        private readonly Panel quickLaunchGripPanel;
+        private readonly Panel addressToolbarGripPanel;
+        private readonly Panel runningProgramsGripPanel;
+        private readonly Panel addressInputHostPanel;
         private readonly Panel notificationAreaPanel;
         private readonly Button btnStart;
+        private readonly TextBox addressToolbarTextBox;
         private IntPtr appBarHandle = IntPtr.Zero;
         private bool isAppBarRegistered = false;
         private bool isFullscreenActive = false;
@@ -67,6 +80,7 @@ namespace win9xplorer
         private readonly ToolTip taskToolTip;
         private readonly ToolTip trayToolTip;
         private readonly ToolTip quickLaunchToolTip;
+        private ToolStripRenderer win9xMenuRenderer;
         private Font normalFont;
         private Font activeFont;
         private readonly Image folderMenuIcon;
@@ -83,10 +97,13 @@ namespace win9xplorer
         private readonly Dictionary<IntPtr, ApplicationWindow> windowsByHandle = new();
         private readonly Dictionary<TrayNotifyIcon, PictureBox> trayIconControls = new();
         private IntPtr contextMenuWindowHandle = IntPtr.Zero;
-        private IntPtr lastActiveWindowHandle = IntPtr.Zero;
-        private bool startMenuWasVisibleOnStartMouseDown;
-        private DateTime lastStartMenuClosedAtUtc = DateTime.MinValue;
-        private IntPtr foregroundWindowBeforeTaskClick = IntPtr.Zero;
+        private readonly TaskbarInteractionStateMachine interactionStateMachine;
+        private readonly StartMenuController startMenuController;
+        private readonly QuickLaunchController quickLaunchController = new();
+        private readonly TrayController trayController = new();
+        private readonly ThemeController themeController = new();
+        private DiagnosticsPanelForm? diagnosticsPanel;
+        private bool allowAppExit;
         private readonly WinApi.LowLevelKeyboardProc keyboardProc;
         private IntPtr keyboardHookHandle = IntPtr.Zero;
         private readonly WinApi.LowLevelMouseProc mouseProc;
@@ -96,18 +113,30 @@ namespace win9xplorer
         private readonly VolumePopupForm volumePopup;
         private readonly TimeDetailsForm timeDetailsPopup;
         private readonly PictureBox customVolumeIcon;
+        private readonly TrayIconInteractionService trayIconInteractionService = new();
         private FileSystemWatcher? quickLaunchWatcher;
         private readonly System.Windows.Forms.Timer quickLaunchRefreshDebounceTimer;
         private string? quickLaunchContextShortcutPath;
+        private string? quickLaunchDragSourcePath;
+        private Point quickLaunchDragStartPoint;
+        private int quickLaunchPreviewInsertPosition = -1;
+        private string selectedThemeProfileName = "Custom";
         private int startMenuIconSize = DefaultStartMenuIconSize;
         private int taskIconSize = DefaultTaskIconSize;
-        private string taskbarFontName = "MS Sans Serif";
-        private float taskbarFontSize = 8.25f;
+        private string taskbarFontName = "\u65B0\u7D30\u660E\u9AD4";
+        private float taskbarFontSize = 9.0f;
         private Color taskbarFontColor = Color.Black;
         private bool lazyLoadProgramsSubmenu = true;
         private bool playVolumeFeedbackSound = true;
         private int startMenuSubmenuOpenDelayMs = 200;
         private bool autoHideTaskbar;
+        private bool startOnWindowsStartup;
+        private bool showQuickLaunchToolbar = true;
+        private bool showAddressToolbar;
+        private bool addressToolbarBeforeQuickLaunch;
+        private bool isToolbarReorderDragging;
+        private bool toolbarOrderChangedDuringDrag;
+        private string? draggingToolbarId;
         private TaskbarButtonStyle taskbarButtonStyle = TaskbarButtonStyle.Modern;
         private int taskbarBevelSize = 1;
         private Color taskbarBaseColor = Color.FromArgb(192, 192, 192);
@@ -122,45 +151,110 @@ namespace win9xplorer
         private DateTime startMenuSearchLastInputUtc = DateTime.MinValue;
         private readonly List<ToolStripItem> startMenuSearchResultItems = new();
         private ToolStripTextBox? startMenuSearchTextBox;
+        private bool suppressStartMenuSearchTextChanged;
         private readonly List<ProgramSearchEntry> programSearchEntriesCache = new();
         private readonly HashSet<ToolStripMenuItem> populatedSubmenusThisSession = new();
         private sealed record ProgramSearchEntry(string DisplayName, string LaunchPath, bool IsShellApp);
+        private sealed class TrayIconInteractionService
+        {
+            public void ForwardMouseDown(TrayNotifyIcon icon, MouseButtons button, uint cursorPosition, int doubleClickTime)
+            {
+                icon.IconMouseDown(ConvertMouseButton(button), cursorPosition, doubleClickTime);
+            }
+
+            public void ForwardMouseUp(TrayNotifyIcon icon, MouseButtons button, uint cursorPosition, int doubleClickTime)
+            {
+                icon.IconMouseUp(ConvertMouseButton(button), cursorPosition, doubleClickTime);
+            }
+
+            public void ForwardMouseMove(TrayNotifyIcon icon, uint cursorPosition)
+            {
+                icon.IconMouseMove(cursorPosition);
+            }
+
+            public void ForwardMouseEnter(TrayNotifyIcon icon, uint cursorPosition)
+            {
+                icon.IconMouseEnter(cursorPosition);
+            }
+
+            public void ForwardMouseLeave(TrayNotifyIcon icon, uint cursorPosition)
+            {
+                icon.IconMouseLeave(cursorPosition);
+            }
+        }
+
         private enum TaskbarButtonStyle
         {
             Modern,
             Win98
         }
 
+        private sealed record OptionsState(
+            int StartMenuIconSize,
+            int TaskIconSize,
+            bool LazyLoadProgramsSubmenu,
+            bool PlayVolumeFeedbackSound,
+            int StartMenuSubmenuOpenDelayMs,
+            bool AutoHideTaskbar,
+            bool StartOnWindowsStartup,
+            TaskbarButtonStyle ButtonStyle,
+            int BevelSize,
+            string FontName,
+            float FontSize,
+            Color FontColor,
+            Color BaseColor,
+            Color LightColor,
+            Color DarkColor,
+            string ThemeProfileName);
+
         private sealed class Win9xColorTable : ProfessionalColorTable
         {
-            public override Color ToolStripDropDownBackground => Color.FromArgb(192, 192, 192);
-            public override Color ImageMarginGradientBegin => Color.FromArgb(192, 192, 192);
-            public override Color ImageMarginGradientMiddle => Color.FromArgb(192, 192, 192);
-            public override Color ImageMarginGradientEnd => Color.FromArgb(192, 192, 192);
-            public override Color MenuItemSelected => Color.FromArgb(0, 0, 128);
-            public override Color MenuItemSelectedGradientBegin => Color.FromArgb(0, 0, 128);
-            public override Color MenuItemSelectedGradientEnd => Color.FromArgb(0, 0, 128);
-            public override Color MenuItemBorder => Color.FromArgb(0, 0, 128);
-            public override Color MenuBorder => Color.FromArgb(128, 128, 128);
-            public override Color SeparatorDark => Color.FromArgb(128, 128, 128);
-            public override Color SeparatorLight => Color.FromArgb(255, 255, 255);
+            private readonly Color baseColor;
+            private readonly Color lightColor;
+            private readonly Color darkColor;
+            private readonly Color selectionColor;
+
+            public Win9xColorTable(Color baseColor, Color lightColor, Color darkColor, Color selectionColor)
+            {
+                this.baseColor = baseColor;
+                this.lightColor = lightColor;
+                this.darkColor = darkColor;
+                this.selectionColor = selectionColor;
+            }
+
+            public override Color ToolStripDropDownBackground => baseColor;
+            public override Color ImageMarginGradientBegin => baseColor;
+            public override Color ImageMarginGradientMiddle => baseColor;
+            public override Color ImageMarginGradientEnd => baseColor;
+            public override Color MenuItemSelected => selectionColor;
+            public override Color MenuItemSelectedGradientBegin => selectionColor;
+            public override Color MenuItemSelectedGradientEnd => selectionColor;
+            public override Color MenuItemBorder => selectionColor;
+            public override Color MenuBorder => darkColor;
+            public override Color SeparatorDark => darkColor;
+            public override Color SeparatorLight => lightColor;
         }
 
         private sealed class Win9xMenuRendererImpl : ToolStripProfessionalRenderer
         {
-            private static readonly Color MenuBase = Color.FromArgb(192, 192, 192);
-            private static readonly Color MenuBlue = Color.FromArgb(0, 0, 128);
-            private static readonly Color MenuLight = Color.FromArgb(255, 255, 255);
-            private static readonly Color MenuDark = Color.FromArgb(128, 128, 128);
+            private readonly Color menuBase;
+            private readonly Color menuBlue;
+            private readonly Color menuLight;
+            private readonly Color menuDark;
 
-            public Win9xMenuRendererImpl() : base(new Win9xColorTable())
+            public Win9xMenuRendererImpl(Color baseColor, Color lightColor, Color darkColor, Color selectionColor)
+                : base(new Win9xColorTable(baseColor, lightColor, darkColor, selectionColor))
             {
+                menuBase = baseColor;
+                menuLight = lightColor;
+                menuDark = darkColor;
+                menuBlue = selectionColor;
                 RoundedEdges = false;
             }
 
             protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
             {
-                using var brush = new SolidBrush(MenuBase);
+                using var brush = new SolidBrush(menuBase);
                 e.Graphics.FillRectangle(brush, e.AffectedBounds);
             }
 
@@ -172,8 +266,8 @@ namespace win9xplorer
                     return;
                 }
 
-                using var darkPen = new Pen(MenuDark);
-                using var lightPen = new Pen(MenuLight);
+                using var darkPen = new Pen(menuDark);
+                using var lightPen = new Pen(menuLight);
 
                 // Raised 3D edge (top/left light, right/bottom dark)
                 var left = rect.Left;
@@ -191,13 +285,13 @@ namespace win9xplorer
             {
                 var rect = new Rectangle(Point.Empty, e.Item.Size);
 
-                using var backBrush = new SolidBrush(MenuBase);
+                using var backBrush = new SolidBrush(menuBase);
                 e.Graphics.FillRectangle(backBrush, rect);
 
                 if (e.Item.Selected && e.Item.Enabled)
                 {
                     var highlightRect = new Rectangle(1, 1, Math.Max(1, e.Item.Width - 2), Math.Max(1, e.Item.Height - 2));
-                    using var highlightBrush = new SolidBrush(MenuBlue);
+                    using var highlightBrush = new SolidBrush(menuBlue);
                     e.Graphics.FillRectangle(highlightBrush, highlightRect);
                 }
             }
@@ -211,8 +305,8 @@ namespace win9xplorer
                 if (!e.Item.Enabled)
                 {
                     var shadowRect = new Rectangle(e.TextRectangle.X + 1, e.TextRectangle.Y + 1, e.TextRectangle.Width, e.TextRectangle.Height);
-                    TextRenderer.DrawText(e.Graphics, text, font, shadowRect, MenuLight, flags);
-                    TextRenderer.DrawText(e.Graphics, text, font, e.TextRectangle, MenuDark, flags);
+                    TextRenderer.DrawText(e.Graphics, text, font, shadowRect, menuLight, flags);
+                    TextRenderer.DrawText(e.Graphics, text, font, e.TextRectangle, menuDark, flags);
                     return;
                 }
 
@@ -226,10 +320,33 @@ namespace win9xplorer
                 var left = e.Item.ContentRectangle.Left + 2;
                 var right = e.Item.ContentRectangle.Right - 2;
 
-                using var darkPen = new Pen(MenuDark);
-                using var lightPen = new Pen(MenuLight);
+                using var darkPen = new Pen(menuDark);
+                using var lightPen = new Pen(menuLight);
                 e.Graphics.DrawLine(darkPen, left, y, right, y);
                 e.Graphics.DrawLine(lightPen, left, y + 1, right, y + 1);
+            }
+
+            protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+            {
+                if (e.Item is not ToolStripMenuItem menuItem || !menuItem.Checked)
+                {
+                    return;
+                }
+
+                var rect = e.ImageRectangle;
+                if (rect.Width <= 0 || rect.Height <= 0)
+                {
+                    rect = new Rectangle(3, 3, 16, Math.Max(16, e.Item.Height - 6));
+                }
+
+                using var pen = new Pen(menuItem.Selected ? Color.White : Color.Black, 2f);
+                var x1 = rect.Left + 3;
+                var y1 = rect.Top + (rect.Height / 2);
+                var x2 = rect.Left + (rect.Width / 2) - 1;
+                var y2 = rect.Bottom - 4;
+                var x3 = rect.Right - 3;
+                var y3 = rect.Top + 4;
+                e.Graphics.DrawLines(pen, new[] { new Point(x1, y1), new Point(x2, y2), new Point(x3, y3) });
             }
 
             // Note: Using native arrow rendering - no custom override needed
@@ -256,10 +373,28 @@ namespace win9xplorer
             }
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!allowAppExit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            base.OnFormClosing(e);
+        }
+
+        private void RequestAppExit()
+        {
+            allowAppExit = true;
+            Application.Exit();
+        }
+
         public RetroTaskbarForm()
         {
             instance = this;
             shellManager = new ShellManager();
+            interactionStateMachine = new TaskbarInteractionStateMachine(TimeSpan.FromMilliseconds(250));
 
             var settings = TaskbarSettingsStore.Load();
             startMenuIconSize = Math.Clamp(settings.StartMenuIconSize, 16, 32);
@@ -268,7 +403,11 @@ namespace win9xplorer
             playVolumeFeedbackSound = settings.PlayVolumeFeedbackSound;
             startMenuSubmenuOpenDelayMs = Math.Clamp(settings.StartMenuSubmenuOpenDelayMs, 0, 1500);
             autoHideTaskbar = settings.AutoHideTaskbar;
-            taskbarFontName = string.IsNullOrWhiteSpace(settings.TaskbarFontName) ? "MS Sans Serif" : settings.TaskbarFontName;
+            startOnWindowsStartup = settings.StartOnWindowsStartup;
+            showQuickLaunchToolbar = settings.ShowQuickLaunchToolbar;
+            showAddressToolbar = settings.ShowAddressToolbar;
+            addressToolbarBeforeQuickLaunch = settings.AddressToolbarBeforeQuickLaunch;
+            taskbarFontName = string.IsNullOrWhiteSpace(settings.TaskbarFontName) ? "\u65B0\u7D30\u660E\u9AD4" : settings.TaskbarFontName;
             taskbarFontSize = Math.Clamp(settings.TaskbarFontSize, 7f, 16f);
             taskbarFontColor = ParseColorOrDefault(settings.TaskbarFontColor, Color.Black);
             taskbarLocked = settings.TaskbarLocked;
@@ -277,6 +416,7 @@ namespace win9xplorer
             taskbarBaseColor = ParseColorOrDefault(settings.TaskbarBaseColor, Color.FromArgb(192, 192, 192));
             taskbarLightColor = ParseColorOrDefault(settings.TaskbarLightColor, Color.FromArgb(255, 255, 255));
             taskbarDarkColor = ParseColorOrDefault(settings.TaskbarDarkColor, Color.FromArgb(128, 128, 128));
+            selectedThemeProfileName = string.IsNullOrWhiteSpace(settings.ThemeProfileName) ? "Custom" : settings.ThemeProfileName;
             if (Enum.TryParse<TaskbarButtonStyle>(settings.TaskbarButtonStyle, ignoreCase: true, out var parsedStyle))
             {
                 taskbarButtonStyle = parsedStyle;
@@ -295,6 +435,10 @@ namespace win9xplorer
             {
                 taskbarButtonStyle = TaskbarButtonStyle.Win98;
             }
+
+            ApplyThemeProfile(selectedThemeProfileName, preserveCustomizations: true);
+            win9xMenuRenderer = CreateWin9xMenuRenderer();
+            ApplyWindowsStartupSetting(startOnWindowsStartup);
 
             FormBorderStyle = FormBorderStyle.None;
             ShowIcon = false;
@@ -333,6 +477,7 @@ namespace win9xplorer
                 Padding = new Padding(0, TaskbarButtonVerticalPadding, 0, TaskbarBottomPadding)
             };
 
+
             startHostPanel = new Panel
             {
                 Dock = DockStyle.Left,
@@ -340,6 +485,26 @@ namespace win9xplorer
                 BackColor = taskbarBaseColor,
                 Padding = new Padding(0, 0, TaskbarButtonGap, 0)
             };
+
+            startToolbarSeparatorPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 4,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor
+            };
+            startToolbarSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
+
+            toolbarsSeparatorPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 4,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor
+            };
+            toolbarsSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
 
             btnStart = new Button
             {
@@ -384,6 +549,79 @@ namespace win9xplorer
                 BorderStyle = BorderStyle.None
             };
 
+            quickLaunchGripPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 8,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor,
+                Cursor = Cursors.SizeWE,
+                Visible = false
+            };
+            quickLaunchGripPanel.Paint += ToolbarGripPanel_Paint;
+            quickLaunchGripPanel.MouseDown += ToolbarGripPanel_MouseDown;
+            quickLaunchGripPanel.MouseMove += ToolbarGripPanel_MouseMove;
+            quickLaunchGripPanel.MouseUp += ToolbarGripPanel_MouseUp;
+            quickLaunchGripPanel.Tag = "QuickLaunch";
+
+            addressToolbarPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 260,
+                Margin = Padding.Empty,
+                Padding = new Padding(2, 2, 2, 1),
+                BackColor = taskbarBaseColor,
+                BorderStyle = BorderStyle.None,
+                Visible = showAddressToolbar
+            };
+
+            addressToolbarGripPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 8,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor,
+                Cursor = Cursors.SizeWE,
+                Visible = false
+            };
+            addressToolbarGripPanel.Paint += ToolbarGripPanel_Paint;
+            addressToolbarGripPanel.MouseDown += ToolbarGripPanel_MouseDown;
+            addressToolbarGripPanel.MouseMove += ToolbarGripPanel_MouseMove;
+            addressToolbarGripPanel.MouseUp += ToolbarGripPanel_MouseUp;
+            addressToolbarGripPanel.Tag = "Address";
+
+            addressInputHostPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                Padding = new Padding(2, 2, 2, 2),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.None
+            };
+            addressInputHostPanel.Paint += AddressInputHostPanel_Paint;
+
+            addressToolbarTextBox = new TextBox
+            {
+                Dock = DockStyle.None,
+                BorderStyle = BorderStyle.None,
+                Font = normalFont,
+                Margin = Padding.Empty,
+                Text = "My Computer"
+            };
+            addressToolbarTextBox.KeyDown += AddressToolbarTextBox_KeyDown;
+            addressToolbarTextBox.TextAlign = HorizontalAlignment.Left;
+            addressToolbarTextBox.Multiline = false;
+            addressToolbarTextBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            addressToolbarTextBox.Height = Math.Max(12, TextRenderer.MeasureText("My Computer", normalFont).Height);
+
+            addressInputHostPanel.Resize += (_, _) => CenterAddressTextBoxVertically();
+            addressInputHostPanel.Controls.Add(addressToolbarTextBox);
+            CenterAddressTextBoxVertically();
+
+            addressToolbarPanel.Controls.Add(addressInputHostPanel);
+
             notificationAreaPanel = new Panel
             {
                 Dock = DockStyle.Right,
@@ -427,7 +665,36 @@ namespace win9xplorer
                 BackColor = taskbarBaseColor
             };
 
+            runningProgramsGripPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 8,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor,
+                Cursor = Cursors.Default,
+                Visible = true,
+                Enabled = false
+            };
+            runningProgramsGripPanel.Paint += ToolbarGripPanel_Paint;
+
+            taskButtonsHostPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor,
+                BorderStyle = BorderStyle.None
+            };
+            taskButtonsHostPanel.Controls.Add(taskButtonsPanel);
+            taskButtonsHostPanel.Controls.Add(runningProgramsGripPanel);
+
             startMenu = BuildStartMenu();
+            startMenuController = new StartMenuController(
+                interactionStateMachine,
+                () => startMenu.Visible,
+                ToggleStartMenu,
+                CloseStartMenuIfVisible);
             taskWindowMenu = BuildTaskWindowMenu();
             taskbarContextMenu = BuildTaskbarContextMenu();
             clockContextMenu = BuildClockContextMenu();
@@ -436,9 +703,11 @@ namespace win9xplorer
             trayToolTip = new ToolTip
             {
                 ShowAlways = true,
-                AutomaticDelay = 300,
+                InitialDelay = 500,
                 ReshowDelay = 100,
-                AutoPopDelay = 8000
+                AutoPopDelay = 5000,
+                UseAnimation = false,
+                UseFading = false
             };
             quickLaunchToolTip = new ToolTip();
             keyboardProc = KeyboardHookCallback;
@@ -451,15 +720,16 @@ namespace win9xplorer
             startHostPanel.Controls.Add(btnStart);
             notificationAreaPanel.Controls.Add(lblClock);
             notificationAreaPanel.Controls.Add(trayIconsPanel);
-            contentPanel.Controls.Add(taskButtonsPanel);
+            contentPanel.Controls.Add(taskButtonsHostPanel);
             contentPanel.Controls.Add(notificationAreaPanel);
-            contentPanel.Controls.Add(quickLaunchPanel);
+            contentPanel.Controls.Add(startToolbarSeparatorPanel);
             contentPanel.Controls.Add(startHostPanel);
 
             Controls.Add(contentPanel);
             Controls.Add(resizeGripPanel);
             trayIconsPanel.Controls.Add(customVolumeIcon);
             trayToolTip.SetToolTip(customVolumeIcon, "Volume");
+            ApplyToolbarLayout(refreshBounds: false);
             UpdateResizeUiState();
 
             MouseUp += TaskbarBackground_MouseUp;
@@ -485,7 +755,10 @@ namespace win9xplorer
             trayIconsPanel.MouseMove += ChildTaskbarResize_MouseMove;
             trayIconsPanel.MouseUp += ChildTaskbarResize_MouseUp;
             quickLaunchPanel.DragEnter += QuickLaunchPanel_DragEnter;
+            quickLaunchPanel.DragOver += QuickLaunchPanel_DragOver;
+            quickLaunchPanel.DragLeave += QuickLaunchPanel_DragLeave;
             quickLaunchPanel.DragDrop += QuickLaunchPanel_DragDrop;
+            quickLaunchPanel.Paint += QuickLaunchPanel_Paint;
 
             refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
             refreshTimer.Tick += (_, _) => RefreshTaskbar();
@@ -499,6 +772,8 @@ namespace win9xplorer
             Load += RetroTaskbarForm_Load;
             FormClosed += RetroTaskbarForm_FormClosed;
             Paint += RetroTaskbarForm_Paint;
+            SizeChanged += (_, _) => RefreshTaskButtonAndTrayLayout();
+            LocationChanged += (_, _) => RefreshTrayHostPlacement();
         }
 
         protected override void WndProc(ref Message m)
@@ -633,6 +908,12 @@ namespace win9xplorer
                 return;
             }
 
+            if (IsDesktopOrShellWindow(foregroundHandle))
+            {
+                SetFullscreenState(false);
+                return;
+            }
+
             if (!WinApi.GetWindowRect(foregroundHandle, out var foregroundRect))
             {
                 SetFullscreenState(false);
@@ -650,6 +931,26 @@ namespace win9xplorer
             SetFullscreenState(isFullscreen);
         }
 
+        private static bool IsDesktopOrShellWindow(IntPtr windowHandle)
+        {
+            if (windowHandle == WinApi.GetShellWindow())
+            {
+                return true;
+            }
+
+            var classNameBuffer = new StringBuilder(256);
+            if (WinApi.GetClassName(windowHandle, classNameBuffer, classNameBuffer.Capacity) == 0)
+            {
+                return false;
+            }
+
+            var className = classNameBuffer.ToString();
+            return className.Equals("Progman", StringComparison.OrdinalIgnoreCase) ||
+                   className.Equals("WorkerW", StringComparison.OrdinalIgnoreCase) ||
+                   className.Equals("Shell_TrayWnd", StringComparison.OrdinalIgnoreCase) ||
+                   className.Equals("Shell_SecondaryTrayWnd", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool IsAltKeyDown() => (WinApi.GetAsyncKeyState(WinApi.VK_MENU) & 0x8000) != 0;
 
         public static RetroTaskbarForm GetOrCreate()
@@ -665,6 +966,7 @@ namespace win9xplorer
         private void RetroTaskbarForm_Load(object? sender, EventArgs e)
         {
             TrySetExplorerTaskbarHidden(true);
+            SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
             InstallKeyboardHook();
             InstallMouseHook();
             InitializeTrayService();
@@ -683,6 +985,7 @@ namespace win9xplorer
             quickLaunchRefreshDebounceTimer.Stop();
             quickLaunchRefreshDebounceTimer.Dispose();
             SaveTaskbarSettings();
+            SystemEvents.DisplaySettingsChanged -= SystemEvents_DisplaySettingsChanged;
 
             foreach (var button in taskButtons.Values)
             {
@@ -705,7 +1008,10 @@ namespace win9xplorer
             }
 
             quickLaunchPanel.DragEnter -= QuickLaunchPanel_DragEnter;
+            quickLaunchPanel.DragOver -= QuickLaunchPanel_DragOver;
+            quickLaunchPanel.DragLeave -= QuickLaunchPanel_DragLeave;
             quickLaunchPanel.DragDrop -= QuickLaunchPanel_DragDrop;
+            quickLaunchPanel.Paint -= QuickLaunchPanel_Paint;
 
             btnStart.Image?.Dispose();
             startMenu.Dispose();
@@ -713,6 +1019,9 @@ namespace win9xplorer
             taskbarContextMenu.Dispose();
             clockContextMenu.Dispose();
             quickLaunchItemContextMenu.Dispose();
+            diagnosticsPanel?.Close();
+            diagnosticsPanel?.Dispose();
+            diagnosticsPanel = null;
             taskToolTip.Dispose();
             trayToolTip.Dispose();
             quickLaunchToolTip.Dispose();
@@ -743,6 +1052,22 @@ namespace win9xplorer
             shellManager.Dispose();
         }
 
+        private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
+        {
+            if (IsDisposed || Disposing)
+            {
+                return;
+            }
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(RefreshTaskButtonAndTrayLayout));
+                return;
+            }
+
+            RefreshTaskButtonAndTrayLayout();
+        }
+
         private void RetroTaskbarForm_Paint(object? sender, PaintEventArgs e)
         {
             // Top bevel is rendered by resizeGripPanel.
@@ -763,8 +1088,10 @@ namespace win9xplorer
                 AutoSize = false,
                 Width = 220,
                 ToolTipText = "Type to search programs",
-                ReadOnly = true
+                ReadOnly = false
             };
+            startMenuSearchTextBox.TextChanged += StartMenuSearchTextBox_TextChanged;
+            startMenuSearchTextBox.KeyDown += StartMenuSearchTextBox_KeyDown;
             menu.Items.Add(startMenuSearchTextBox);
             menu.Items.Add(new ToolStripSeparator());
 
@@ -813,7 +1140,7 @@ namespace win9xplorer
 
             menu.Closed += (_, _) =>
             {
-                lastStartMenuClosedAtUtc = DateTime.UtcNow;
+                startMenuController.OnStartMenuClosed();
                 ResetStartMenuSearch();
                 ResetStartMenuSubmenuSessionCache();
                 btnStart.Invalidate();
@@ -851,6 +1178,39 @@ namespace win9xplorer
                 }
 
                 ShowShellContextMenuForPath(fileSystemPath, Cursor.Position);
+            };
+        }
+
+        private void AttachProgramSearchContextMenu(ToolStripMenuItem item, ProgramSearchEntry entry)
+        {
+            item.MouseUp += (_, e) =>
+            {
+                if (e.Button != MouseButtons.Right)
+                {
+                    return;
+                }
+
+                using var menu = new ContextMenuStrip();
+                ApplyWin9xContextMenuStyle(menu);
+
+                var openItem = new ToolStripMenuItem("Open");
+                openItem.Click += (_, _) => LaunchProgramSearchEntry(entry);
+                menu.Items.Add(openItem);
+
+                if (!entry.IsShellApp && File.Exists(entry.LaunchPath))
+                {
+                    var openFileLocationItem = new ToolStripMenuItem("Open file location");
+                    openFileLocationItem.Click += (_, _) => LaunchProcess("explorer.exe", $"/select,\"{entry.LaunchPath}\"");
+                    menu.Items.Add(openFileLocationItem);
+                }
+                else if (entry.IsShellApp)
+                {
+                    var openAppsFolderItem = new ToolStripMenuItem("Open Apps folder");
+                    openAppsFolderItem.Click += (_, _) => LaunchProcess("explorer.exe", "shell:AppsFolder");
+                    menu.Items.Add(openAppsFolderItem);
+                }
+
+                menu.Show(Cursor.Position);
             };
         }
 
@@ -1207,7 +1567,9 @@ namespace win9xplorer
 
             foreach (var app in apps)
             {
-                items.Add(CreateMenuItem(app.DisplayName, GetProgramSearchEntryIcon(app), (_, _) => LaunchProgramSearchEntry(app)));
+                var item = CreateMenuItem(app.DisplayName, GetProgramSearchEntryIcon(app), (_, _) => LaunchProgramSearchEntry(app));
+                AttachProgramSearchContextMenu(item, app);
+                items.Add(item);
             }
 
             ApplyTwoColumnLayoutIfNeeded(items);
@@ -1311,7 +1673,7 @@ namespace win9xplorer
 
             if (startMenuSearchTextBox != null)
             {
-                startMenuSearchTextBox.Text = string.Empty;
+                ApplySearchQueryToTextBox();
             }
 
             ClearStartMenuSearchResultsItems();
@@ -1321,6 +1683,59 @@ namespace win9xplorer
         private void ResetStartMenuSubmenuSessionCache()
         {
             populatedSubmenusThisSession.Clear();
+        }
+
+        private void StartMenuSearchTextBox_TextChanged(object? sender, EventArgs e)
+        {
+            if (suppressStartMenuSearchTextChanged || startMenuSearchTextBox == null)
+            {
+                return;
+            }
+
+            startMenuSearchQuery.Clear();
+            startMenuSearchQuery.Append(startMenuSearchTextBox.Text);
+            startMenuSearchLastInputUtc = DateTime.UtcNow;
+            UpdateStartMenuSearchResultsFromCurrentQuery();
+        }
+
+        private void StartMenuSearchTextBox_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (!startMenu.Visible)
+            {
+                return;
+            }
+
+            if (!IsStartMenuNavigationVirtualKey((int)e.KeyCode))
+            {
+                return;
+            }
+
+            if (HandleStartMenuSearchKey((int)e.KeyCode))
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+        }
+
+        private bool IsStartMenuSearchTextBoxFocused()
+        {
+            return startMenuSearchTextBox?.TextBox.Focused == true;
+        }
+
+        private static bool IsStartMenuNavigationVirtualKey(int vkCode)
+        {
+            return vkCode == (int)Keys.Escape ||
+                   vkCode == (int)Keys.Return ||
+                   vkCode == (int)Keys.Back ||
+                   vkCode == (int)Keys.Tab ||
+                   vkCode == (int)Keys.Up ||
+                   vkCode == (int)Keys.Down ||
+                   vkCode == (int)Keys.Left ||
+                   vkCode == (int)Keys.Right ||
+                   vkCode == (int)Keys.Home ||
+                   vkCode == (int)Keys.End ||
+                   vkCode == (int)Keys.PageUp ||
+                   vkCode == (int)Keys.PageDown;
         }
 
         private bool HandleStartMenuSearchKey(int vkCode)
@@ -1390,7 +1805,9 @@ namespace win9xplorer
                 return true;
             }
 
-            if (vkCode == (int)Keys.Down || vkCode == (int)Keys.Up)
+            if (vkCode == (int)Keys.Down || vkCode == (int)Keys.Up ||
+                vkCode == (int)Keys.Home || vkCode == (int)Keys.End ||
+                vkCode == (int)Keys.PageUp || vkCode == (int)Keys.PageDown)
             {
                 if (startMenuSearchQuery.Length == 0)
                 {
@@ -1408,9 +1825,21 @@ namespace win9xplorer
                 }
 
                 var currentIndex = selectableItems.FindIndex(item => item.Selected);
-                var nextIndex = vkCode == (int)Keys.Down
-                    ? (currentIndex + 1 + selectableItems.Count) % selectableItems.Count
-                    : (currentIndex - 1 + selectableItems.Count) % selectableItems.Count;
+                var nextIndex = vkCode switch
+                {
+                    (int)Keys.Down => (currentIndex + 1 + selectableItems.Count) % selectableItems.Count,
+                    (int)Keys.Up => (currentIndex - 1 + selectableItems.Count) % selectableItems.Count,
+                    (int)Keys.Home => 0,
+                    (int)Keys.End => selectableItems.Count - 1,
+                    (int)Keys.PageDown => Math.Clamp(currentIndex + 8, 0, selectableItems.Count - 1),
+                    (int)Keys.PageUp => Math.Clamp(currentIndex - 8, 0, selectableItems.Count - 1),
+                    _ => currentIndex
+                };
+
+                if (nextIndex < 0)
+                {
+                    nextIndex = 0;
+                }
 
                 selectableItems[nextIndex].Select();
                 return true;
@@ -1419,6 +1848,11 @@ namespace win9xplorer
             if (vkCode == (int)Keys.Right || vkCode == (int)Keys.Left || vkCode == (int)Keys.Tab)
             {
                 return HandleStartMenuNavigationKey(vkCode);
+            }
+
+            if (startMenuSearchQuery.Length == 0 && TryActivateStartMenuAccelerator(vkCode))
+            {
+                return true;
             }
 
             var searchChar = TryConvertVirtualKeyToSearchChar(vkCode);
@@ -1481,6 +1915,18 @@ namespace win9xplorer
                 return true;
             }
 
+            if (vkCode == (int)Keys.Home || vkCode == (int)Keys.PageUp)
+            {
+                navigableItems[0].Select();
+                return true;
+            }
+
+            if (vkCode == (int)Keys.End || vkCode == (int)Keys.PageDown)
+            {
+                navigableItems[^1].Select();
+                return true;
+            }
+
             if (vkCode == (int)Keys.Right || vkCode == (int)Keys.Return)
             {
                 if (navigableItems.ElementAtOrDefault(Math.Max(selectedIndex, 0)) is not ToolStripMenuItem selectedMenuItem || !selectedMenuItem.Enabled)
@@ -1508,6 +1954,47 @@ namespace win9xplorer
                 if (navigableItems.ElementAtOrDefault(Math.Max(selectedIndex, 0)) is ToolStripMenuItem selectedMenuItem && selectedMenuItem.DropDown.Visible)
                 {
                     selectedMenuItem.HideDropDown();
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryActivateStartMenuAccelerator(int vkCode)
+        {
+            if (vkCode < (int)Keys.A || vkCode > (int)Keys.Z)
+            {
+                return false;
+            }
+
+            var accelerator = char.ToUpperInvariant((char)vkCode);
+            var candidates = startMenu.Items
+                .OfType<ToolStripMenuItem>()
+                .Where(item => item.Available && item.Enabled)
+                .ToList();
+
+            var currentIndex = candidates.FindIndex(item => item.Selected);
+            for (var offset = 1; offset <= candidates.Count; offset++)
+            {
+                var candidate = candidates[(Math.Max(currentIndex, -1) + offset) % candidates.Count];
+                var text = candidate.Text?.TrimStart() ?? string.Empty;
+                if (text.Length == 0)
+                {
+                    continue;
+                }
+
+                if (char.ToUpperInvariant(text[0]) != accelerator)
+                {
+                    continue;
+                }
+
+                candidate.Select();
+                if (candidate.HasDropDownItems)
+                {
+                    candidate.ShowDropDown();
+                    SelectFirstDropdownItem(candidate);
                 }
 
                 return true;
@@ -1546,6 +2033,27 @@ namespace win9xplorer
             {
                 var nextIndex = (selectedIndex - 1 + dropdownItems.Count) % dropdownItems.Count;
                 dropdownItems[nextIndex].Select();
+                return true;
+            }
+
+            if (vkCode == (int)Keys.Home)
+            {
+                dropdownItems[0].Select();
+                return true;
+            }
+
+            if (vkCode == (int)Keys.End)
+            {
+                dropdownItems[^1].Select();
+                return true;
+            }
+
+            if (vkCode == (int)Keys.PageUp || vkCode == (int)Keys.PageDown)
+            {
+                var pageStep = 8;
+                var direction = vkCode == (int)Keys.PageDown ? 1 : -1;
+                var targetIndex = Math.Clamp(selectedIndex + (direction * pageStep), 0, dropdownItems.Count - 1);
+                dropdownItems[targetIndex].Select();
                 return true;
             }
 
@@ -1599,8 +2107,10 @@ namespace win9xplorer
                 return;
             }
 
+            suppressStartMenuSearchTextChanged = true;
             startMenuSearchTextBox.Text = startMenuSearchQuery.ToString();
             startMenuSearchTextBox.SelectionStart = startMenuSearchTextBox.TextLength;
+            suppressStartMenuSearchTextChanged = false;
         }
 
         private void UpdateStartMenuSearchResultsFromCurrentQuery()
@@ -1636,6 +2146,7 @@ namespace win9xplorer
                     var icon = GetProgramSearchEntryIcon(match);
                     var matchItem = CreateMenuItem(match.DisplayName, icon, (_, _) => LaunchProgramSearchEntry(match));
                     matchItem.Tag = match;
+                    AttachProgramSearchContextMenu(matchItem, match);
                     startMenu.Items.Insert(insertIndex + i, matchItem);
                     startMenuSearchResultItems.Add(matchItem);
                 }
@@ -1647,10 +2158,33 @@ namespace win9xplorer
         private List<ProgramSearchEntry> GetProgramSearchMatches(string query, int maxCount)
         {
             var uniqueByName = new HashSet<string>(StringComparer.CurrentCultureIgnoreCase);
+            var normalizedQuery = query.Trim();
 
             return GetProgramSearchEntries()
-                .Where(entry => entry.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(entry => !entry.DisplayName.StartsWith(query, StringComparison.OrdinalIgnoreCase))
+                .Where(entry => entry.DisplayName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry =>
+                {
+                    var name = entry.DisplayName;
+                    var startsWith = name.StartsWith(normalizedQuery, StringComparison.OrdinalIgnoreCase);
+                    var contains = name.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase);
+
+                    if (startsWith && !entry.IsShellApp)
+                    {
+                        return 0;
+                    }
+
+                    if (contains && !entry.IsShellApp)
+                    {
+                        return 1;
+                    }
+
+                    if (startsWith)
+                    {
+                        return 2;
+                    }
+
+                    return 3;
+                })
                 .ThenBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
                 .Where(entry => uniqueByName.Add(entry.DisplayName.Trim()))
                 .Take(maxCount)
@@ -1926,14 +2460,25 @@ namespace win9xplorer
 
         private static Image LoadMenuAsset(string fileName, Image fallback)
         {
-            var baseDir = Application.StartupPath;
-            var iconPath = Path.Combine(baseDir, "Windows XP Icons", fileName);
-
             try
             {
-                if (File.Exists(iconPath))
+                var assembly = typeof(RetroTaskbarForm).Assembly;
+                var resourceName = assembly
+                    .GetManifestResourceNames()
+                    .FirstOrDefault(name =>
+                        name.EndsWith(fileName, StringComparison.OrdinalIgnoreCase) &&
+                        (name.Contains("Windows XP Icons", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("Windows_XP_Icons", StringComparison.OrdinalIgnoreCase)));
+
+                if (!string.IsNullOrWhiteSpace(resourceName))
                 {
-                    using var image = Image.FromFile(iconPath);
+                    using var stream = assembly.GetManifestResourceStream(resourceName);
+                    if (stream == null)
+                    {
+                        return new Bitmap(fallback);
+                    }
+
+                    using var image = Image.FromStream(stream);
                     return new Bitmap(image);
                 }
             }
@@ -1949,7 +2494,8 @@ namespace win9xplorer
         {
             var menu = new ContextMenuStrip
             {
-                ShowImageMargin = false,
+                ShowImageMargin = true,
+                ShowCheckMargin = true,
                 Font = normalFont
             };
             ApplyWin9xContextMenuStyle(menu);
@@ -1984,21 +2530,467 @@ namespace win9xplorer
             };
             ApplyWin9xContextMenuStyle(menu);
 
+            var toolbarsItem = new ToolStripMenuItem("Toolbars");
+            var quickLaunchToolbarItem = new ToolStripMenuItem("Quick Launch", null, (_, _) => ToggleQuickLaunchToolbar());
+            var addressToolbarItem = new ToolStripMenuItem("Address", null, (_, _) => ToggleAddressToolbar());
+            var linksToolbarItem = new ToolStripMenuItem("Links") { Enabled = false };
+            var desktopToolbarItem = new ToolStripMenuItem("Desktop") { Enabled = false };
+            var addressLeftItem = new ToolStripMenuItem("Address Left of Quick Launch", null, (_, _) => SetToolbarOrder(addressFirst: true));
+            var quickLaunchLeftItem = new ToolStripMenuItem("Quick Launch Left of Address", null, (_, _) => SetToolbarOrder(addressFirst: false));
+            toolbarsItem.DropDownItems.Add(quickLaunchToolbarItem);
+            toolbarsItem.DropDownItems.Add(addressToolbarItem);
+            toolbarsItem.DropDownItems.Add(linksToolbarItem);
+            toolbarsItem.DropDownItems.Add(desktopToolbarItem);
+            toolbarsItem.DropDownItems.Add(new ToolStripSeparator());
+            toolbarsItem.DropDownItems.Add(addressLeftItem);
+            toolbarsItem.DropDownItems.Add(quickLaunchLeftItem);
+
+            menu.Items.Add(toolbarsItem);
+            menu.Items.Add(new ToolStripSeparator());
+            var cascadeWindowsItem = new ToolStripMenuItem("Cascade Windows", null, (_, _) => CascadeWindows());
+            var tileHorizontallyItem = new ToolStripMenuItem("Tile Windows Horizontally", null, (_, _) => TileWindowsHorizontally());
+            var tileVerticallyItem = new ToolStripMenuItem("Tile Windows Vertically", null, (_, _) => TileWindowsVertically());
+            var tileGridItem = new ToolStripMenuItem("Tile Windows in Grids", null, (_, _) => TileWindowsInGrid());
+            menu.Items.Add(cascadeWindowsItem);
+            menu.Items.Add(tileHorizontallyItem);
+            menu.Items.Add(tileVerticallyItem);
+            menu.Items.Add(tileGridItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Show the Desktop", null, (_, _) => ShowDesktop());
+            menu.Items.Add("Task Manager", null, (_, _) => OpenTaskManager());
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Refresh Quick Launch", null, (_, _) => LoadQuickLaunchButtons());
             menu.Items.Add(new ToolStripSeparator());
-            var lockItem = new ToolStripMenuItem("Lock Taskbar", null, (_, _) => SetTaskbarLocked(true));
-            var unlockItem = new ToolStripMenuItem("Unlock Taskbar", null, (_, _) => SetTaskbarLocked(false));
+            var lockItem = new ToolStripMenuItem("Lock Taskbar")
+            {
+                CheckOnClick = true
+            };
+            lockItem.CheckedChanged += (_, _) => SetTaskbarLocked(lockItem.Checked);
             menu.Items.Add(lockItem);
-            menu.Items.Add(unlockItem);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Options...", null, (_, _) => ShowOptionsDialog());
+            var appMenuItem = new ToolStripMenuItem("win9xplorer");
+            appMenuItem.DropDownItems.Add("Diagnostics...", null, (_, _) => ShowDiagnosticsPanel());
+            appMenuItem.DropDownItems.Add("Options...", null, (_, _) => ShowOptionsDialog());
+            appMenuItem.DropDownItems.Add(new ToolStripSeparator());
+            appMenuItem.DropDownItems.Add("Exit App", null, (_, _) => RequestAppExit());
+            menu.Items.Add(appMenuItem);
 
             menu.Opening += (_, _) =>
             {
-                lockItem.Enabled = !taskbarLocked;
-                unlockItem.Enabled = taskbarLocked;
+                quickLaunchToolbarItem.Checked = showQuickLaunchToolbar;
+                addressToolbarItem.Checked = showAddressToolbar;
+                addressLeftItem.Enabled = showQuickLaunchToolbar && showAddressToolbar;
+                quickLaunchLeftItem.Enabled = showQuickLaunchToolbar && showAddressToolbar;
+                addressLeftItem.Checked = showQuickLaunchToolbar && showAddressToolbar && addressToolbarBeforeQuickLaunch;
+                quickLaunchLeftItem.Checked = showQuickLaunchToolbar && showAddressToolbar && !addressToolbarBeforeQuickLaunch;
+                var arrangeCount = GetArrangeableWindowHandles().Count;
+                cascadeWindowsItem.Enabled = arrangeCount > 0;
+                tileHorizontallyItem.Enabled = arrangeCount > 0;
+                tileVerticallyItem.Enabled = arrangeCount > 0;
+                tileGridItem.Enabled = arrangeCount > 0;
+                lockItem.Checked = taskbarLocked;
             };
             return menu;
+        }
+
+        private void ToggleQuickLaunchToolbar()
+        {
+            showQuickLaunchToolbar = !showQuickLaunchToolbar;
+            ApplyToolbarLayout();
+            SaveTaskbarSettings();
+        }
+
+        private void ToggleAddressToolbar()
+        {
+            showAddressToolbar = !showAddressToolbar;
+            ApplyToolbarLayout();
+            SaveTaskbarSettings();
+        }
+
+        private void SetToolbarOrder(bool addressFirst)
+        {
+            addressToolbarBeforeQuickLaunch = addressFirst;
+            ApplyToolbarLayout();
+            SaveTaskbarSettings();
+        }
+
+        private void ApplyToolbarLayout(bool refreshBounds = true)
+        {
+            quickLaunchPanel.Visible = showQuickLaunchToolbar;
+            addressToolbarPanel.Visible = showAddressToolbar;
+            quickLaunchGripPanel.Visible = showQuickLaunchToolbar;
+            addressToolbarGripPanel.Visible = showAddressToolbar;
+            runningProgramsGripPanel.Visible = true;
+
+            contentPanel.SuspendLayout();
+            contentPanel.Controls.Clear();
+            contentPanel.Controls.Add(taskButtonsHostPanel);
+            contentPanel.Controls.Add(notificationAreaPanel);
+
+            if (showQuickLaunchToolbar && showAddressToolbar)
+            {
+                if (addressToolbarBeforeQuickLaunch)
+                {
+                    contentPanel.Controls.Add(quickLaunchPanel);
+                    contentPanel.Controls.Add(quickLaunchGripPanel);
+                    contentPanel.Controls.Add(toolbarsSeparatorPanel);
+                    contentPanel.Controls.Add(addressToolbarPanel);
+                    contentPanel.Controls.Add(addressToolbarGripPanel);
+                }
+                else
+                {
+                    contentPanel.Controls.Add(addressToolbarPanel);
+                    contentPanel.Controls.Add(addressToolbarGripPanel);
+                    contentPanel.Controls.Add(toolbarsSeparatorPanel);
+                    contentPanel.Controls.Add(quickLaunchPanel);
+                    contentPanel.Controls.Add(quickLaunchGripPanel);
+                }
+            }
+            else
+            {
+                if (showQuickLaunchToolbar)
+                {
+                    contentPanel.Controls.Add(quickLaunchPanel);
+                    contentPanel.Controls.Add(quickLaunchGripPanel);
+                }
+
+                if (showAddressToolbar)
+                {
+                    contentPanel.Controls.Add(addressToolbarPanel);
+                    contentPanel.Controls.Add(addressToolbarGripPanel);
+                }
+            }
+
+            startToolbarSeparatorPanel.Visible = showQuickLaunchToolbar || showAddressToolbar;
+            if (startToolbarSeparatorPanel.Visible)
+            {
+                contentPanel.Controls.Add(startToolbarSeparatorPanel);
+            }
+            contentPanel.Controls.Add(startHostPanel);
+            contentPanel.ResumeLayout();
+
+            ResizeQuickLaunchPanel();
+            if (refreshBounds && IsHandleCreated)
+            {
+                SetTaskbarBounds();
+                RefreshTaskbar();
+            }
+        }
+
+        private void AddressInputHostPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            var rect = new Rectangle(0, 0, addressInputHostPanel.Width - 1, addressInputHostPanel.Height - 1);
+            if (rect.Width <= 0 || rect.Height <= 0)
+            {
+                return;
+            }
+
+            using var fillBrush = new SolidBrush(Color.White);
+            e.Graphics.FillRectangle(fillBrush, rect);
+            using var darkPen = new Pen(taskbarDarkColor);
+            using var lightPen = new Pen(taskbarLightColor);
+            e.Graphics.DrawLine(darkPen, rect.Left, rect.Top, rect.Right, rect.Top);
+            e.Graphics.DrawLine(darkPen, rect.Left, rect.Top, rect.Left, rect.Bottom);
+            e.Graphics.DrawLine(lightPen, rect.Right, rect.Top, rect.Right, rect.Bottom);
+            e.Graphics.DrawLine(lightPen, rect.Left, rect.Bottom, rect.Right, rect.Bottom);
+        }
+
+        private void CenterAddressTextBoxVertically()
+        {
+            addressToolbarTextBox.Left = 3;
+            addressToolbarTextBox.Width = Math.Max(8, addressInputHostPanel.ClientSize.Width - 6);
+            var desiredTop = Math.Max(2, (addressInputHostPanel.ClientSize.Height - addressToolbarTextBox.Height - 2) / 2);
+            addressToolbarTextBox.Top = desiredTop;
+        }
+
+        private void ToolbarGripPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            if (sender is not Panel panel)
+            {
+                return;
+            }
+
+            e.Graphics.Clear(taskbarBaseColor);
+            using var darkPen = new Pen(taskbarDarkColor);
+            using var lightPen = new Pen(taskbarLightColor);
+            var left = 2;
+            var top = 2;
+            var bottom = Math.Max(top, panel.Height - 5);
+            e.Graphics.DrawLine(lightPen, left, top, left, bottom);
+            e.Graphics.DrawLine(lightPen, left + 1, top, left + 1, bottom);
+            e.Graphics.DrawLine(darkPen, left + 2, top, left + 2, bottom);
+        }
+
+        private void ToolbarSeparatorPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            if (sender is not Panel panel)
+            {
+                return;
+            }
+
+            e.Graphics.Clear(taskbarBaseColor);
+            var center = panel.Width / 2;
+            var top = 0;
+            var bottom = Math.Max(top, panel.Height - 3);
+            using var darkPen = new Pen(taskbarDarkColor);
+            using var lightPen = new Pen(taskbarLightColor);
+            e.Graphics.DrawLine(darkPen, center - 1, top, center - 1, bottom);
+            e.Graphics.DrawLine(lightPen, center, top, center, bottom);
+        }
+
+        private void ToolbarGripPanel_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || taskbarLocked)
+            {
+                return;
+            }
+
+            if (sender is not Panel panel || panel.Tag is not string toolbarId)
+            {
+                return;
+            }
+
+            if (!showQuickLaunchToolbar || !showAddressToolbar)
+            {
+                return;
+            }
+
+            isToolbarReorderDragging = true;
+            toolbarOrderChangedDuringDrag = false;
+            draggingToolbarId = toolbarId;
+            panel.Capture = true;
+        }
+
+        private void ToolbarGripPanel_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!isToolbarReorderDragging || string.IsNullOrWhiteSpace(draggingToolbarId))
+            {
+                return;
+            }
+
+            var cursorPoint = contentPanel.PointToClient(Cursor.Position);
+            if (draggingToolbarId.Equals("Address", StringComparison.OrdinalIgnoreCase))
+            {
+                var quickLaunchMidX = quickLaunchPanel.Left + (quickLaunchPanel.Width / 2);
+                var shouldBeAddressFirst = cursorPoint.X < quickLaunchMidX;
+                if (shouldBeAddressFirst != addressToolbarBeforeQuickLaunch)
+                {
+                    addressToolbarBeforeQuickLaunch = shouldBeAddressFirst;
+                    toolbarOrderChangedDuringDrag = true;
+                    ApplyToolbarLayout(refreshBounds: false);
+                }
+            }
+            else
+            {
+                var addressMidX = addressToolbarPanel.Left + (addressToolbarPanel.Width / 2);
+                var shouldBeAddressFirst = cursorPoint.X > addressMidX;
+                if (shouldBeAddressFirst != addressToolbarBeforeQuickLaunch)
+                {
+                    addressToolbarBeforeQuickLaunch = shouldBeAddressFirst;
+                    toolbarOrderChangedDuringDrag = true;
+                    ApplyToolbarLayout(refreshBounds: false);
+                }
+            }
+        }
+
+        private void ToolbarGripPanel_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (!isToolbarReorderDragging)
+            {
+                return;
+            }
+
+            isToolbarReorderDragging = false;
+            draggingToolbarId = null;
+            if (sender is Panel panel)
+            {
+                panel.Capture = false;
+            }
+
+            if (toolbarOrderChangedDuringDrag)
+            {
+                toolbarOrderChangedDuringDrag = false;
+                ApplyToolbarLayout();
+                SaveTaskbarSettings();
+            }
+        }
+
+        private void AddressToolbarTextBox_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.Enter)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            OpenAddressFromToolbar();
+        }
+
+        private void OpenAddressFromToolbar()
+        {
+            var text = addressToolbarTextBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            if (text.Equals("My Computer", StringComparison.OrdinalIgnoreCase))
+            {
+                BringExplorerToFront();
+                return;
+            }
+
+            if (Directory.Exists(text) || File.Exists(text))
+            {
+                LaunchProcess("explorer.exe", $"\"{text}\"");
+                return;
+            }
+
+            if (text.Contains(":") || text.StartsWith("\\", StringComparison.Ordinal))
+            {
+                LaunchProcess("explorer.exe", text);
+                return;
+            }
+
+            if (!text.Contains('.'))
+            {
+                var candidatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), text);
+                if (Directory.Exists(candidatePath))
+                {
+                    LaunchProcess("explorer.exe", $"\"{candidatePath}\"");
+                    return;
+                }
+            }
+
+            if (!Uri.TryCreate(text, UriKind.Absolute, out _))
+            {
+                text = "https://" + text;
+            }
+
+            LaunchProcess(text);
+        }
+
+        private void OpenTaskManager()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "taskmgr.exe",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to launch Task Manager: {ex.Message}");
+            }
+        }
+
+        private List<IntPtr> GetArrangeableWindowHandles()
+        {
+            return windowsByHandle.Keys
+                .Where(handle => handle != IntPtr.Zero && WinApi.GetWindow(handle, WinApi.GW_OWNER) == IntPtr.Zero)
+                .ToList();
+        }
+
+        private void CascadeWindows()
+        {
+            var handles = GetArrangeableWindowHandles();
+            if (handles.Count == 0)
+            {
+                return;
+            }
+
+            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+            var offset = Math.Max(20, Math.Min(36, area.Height / 18));
+            var width = Math.Max(280, area.Width - (offset * Math.Max(0, handles.Count - 1)));
+            var height = Math.Max(180, area.Height - (offset * Math.Max(0, handles.Count - 1)));
+
+            for (var i = 0; i < handles.Count; i++)
+            {
+                var handle = handles[i];
+                WinApi.ShowWindow(handle, WinApi.SW_RESTORE);
+                var x = Math.Min(area.Left + (offset * i), Math.Max(area.Left, area.Right - width));
+                var y = Math.Min(area.Top + (offset * i), Math.Max(area.Top, area.Bottom - height));
+                WinApi.MoveWindow(handle, x, y, width, height, true);
+            }
+        }
+
+        private void TileWindowsHorizontally()
+        {
+            var handles = GetArrangeableWindowHandles();
+            if (handles.Count == 0)
+            {
+                return;
+            }
+
+            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+            var rows = handles.Count;
+            var rowHeight = Math.Max(120, area.Height / rows);
+
+            for (var i = 0; i < handles.Count; i++)
+            {
+                var handle = handles[i];
+                WinApi.ShowWindow(handle, WinApi.SW_RESTORE);
+                var y = area.Top + (rowHeight * i);
+                var height = (i == handles.Count - 1) ? area.Bottom - y : rowHeight;
+                WinApi.MoveWindow(handle, area.Left, y, area.Width, height, true);
+            }
+        }
+
+        private void TileWindowsVertically()
+        {
+            var handles = GetArrangeableWindowHandles();
+            if (handles.Count == 0)
+            {
+                return;
+            }
+
+            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+            var columns = handles.Count;
+            var columnWidth = Math.Max(160, area.Width / columns);
+
+            for (var i = 0; i < handles.Count; i++)
+            {
+                var handle = handles[i];
+                WinApi.ShowWindow(handle, WinApi.SW_RESTORE);
+                var x = area.Left + (columnWidth * i);
+                var width = (i == handles.Count - 1) ? area.Right - x : columnWidth;
+                WinApi.MoveWindow(handle, x, area.Top, width, area.Height, true);
+            }
+        }
+
+        private void TileWindowsInGrid()
+        {
+            var handles = GetArrangeableWindowHandles();
+            if (handles.Count == 0)
+            {
+                return;
+            }
+
+            var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+            var count = handles.Count;
+            var columns = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(count)));
+            var rows = Math.Max(1, (int)Math.Ceiling(count / (double)columns));
+            var cellWidth = Math.Max(160, area.Width / columns);
+            var cellHeight = Math.Max(120, area.Height / rows);
+
+            for (var i = 0; i < count; i++)
+            {
+                var handle = handles[i];
+                WinApi.ShowWindow(handle, WinApi.SW_RESTORE);
+
+                var row = i / columns;
+                var col = i % columns;
+                var x = area.Left + (col * cellWidth);
+                var y = area.Top + (row * cellHeight);
+
+                var width = (col == columns - 1) ? area.Right - x : cellWidth;
+                var height = (row == rows - 1) ? area.Bottom - y : cellHeight;
+
+                WinApi.MoveWindow(handle, x, y, width, height, true);
+            }
         }
 
         private ContextMenuStrip BuildClockContextMenu()
@@ -2025,18 +3017,30 @@ namespace win9xplorer
             };
             ApplyWin9xContextMenuStyle(menu);
 
-            menu.Items.Add("Open", null, (_, _) => OpenQuickLaunchContextItem());
+            var openItem = menu.Items.Add("Open", null, (_, _) => OpenQuickLaunchContextItem());
+            var renameItem = menu.Items.Add("Rename", null, (_, _) => RenameQuickLaunchContextItem());
+            var moveLeftItem = menu.Items.Add("Move left", null, (_, _) => MoveQuickLaunchContextItem(-1));
+            var moveRightItem = menu.Items.Add("Move right", null, (_, _) => MoveQuickLaunchContextItem(1));
+            var openContainingFolderItem = menu.Items.Add("Open containing folder", null, (_, _) => OpenQuickLaunchContextItemLocation());
             menu.Items.Add("Open Quick Launch Folder", null, (_, _) => OpenQuickLaunchFolderInExplorerForm());
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("Remove from Quick Launch", null, (_, _) => RemoveQuickLaunchContextItem());
-            menu.Items.Add("Properties", null, (_, _) => ShowQuickLaunchContextItemProperties());
+            var addSeparatorItem = menu.Items.Add("Add separator", null, (_, _) => AddQuickLaunchSeparator());
+            var removeItem = menu.Items.Add("Remove from Quick Launch", null, (_, _) => RemoveQuickLaunchContextItem());
+            var propertiesItem = menu.Items.Add("Properties", null, (_, _) => ShowQuickLaunchContextItemProperties());
 
             menu.Opening += (_, _) =>
             {
-                var hasFile = !string.IsNullOrWhiteSpace(quickLaunchContextShortcutPath) && File.Exists(quickLaunchContextShortcutPath);
-                menu.Items[0].Enabled = hasFile;
-                menu.Items[3].Enabled = hasFile;
-                menu.Items[4].Enabled = hasFile;
+                var contextPath = quickLaunchContextShortcutPath;
+                var hasFile = !string.IsNullOrWhiteSpace(contextPath) && File.Exists(contextPath);
+                var isSeparator = hasFile && Path.GetExtension(contextPath!).Equals(".separator", StringComparison.OrdinalIgnoreCase);
+                openItem.Enabled = hasFile && !isSeparator;
+                renameItem.Enabled = hasFile;
+                moveLeftItem.Enabled = hasFile;
+                moveRightItem.Enabled = hasFile;
+                openContainingFolderItem.Enabled = hasFile;
+                removeItem.Enabled = hasFile;
+                propertiesItem.Enabled = hasFile && !isSeparator;
+                addSeparatorItem.Enabled = true;
             };
 
             return menu;
@@ -2082,7 +3086,7 @@ namespace win9xplorer
             {
                 // Use custom Win9x renderer for Win98 style
                 menu.RenderMode = ToolStripRenderMode.Professional;
-                menu.Renderer = Win9xMenuRenderer;
+                menu.Renderer = win9xMenuRenderer;
                 menu.ShowImageMargin = menu.ShowImageMargin;
                 menu.DropShadowEnabled = false;
 
@@ -2097,7 +3101,7 @@ namespace win9xplorer
             }
         }
 
-        private static void SetupMenuItemRenderer(ToolStripMenuItem menuItem)
+        private void SetupMenuItemRenderer(ToolStripMenuItem menuItem)
         {
             // Set up renderer for the dropdown BEFORE it opens
             menuItem.DropDownOpening += (s, e) =>
@@ -2105,7 +3109,7 @@ namespace win9xplorer
                 if (menuItem.DropDown is ToolStripDropDown dropDown)
                 {
                     dropDown.RenderMode = ToolStripRenderMode.Professional;
-                    dropDown.Renderer = Win9xMenuRenderer;
+                    dropDown.Renderer = win9xMenuRenderer;
                     dropDown.DropShadowEnabled = false;
 
                     // Recursively apply to all nested menu items
@@ -2180,6 +3184,7 @@ namespace win9xplorer
                 PlayVolumeFeedbackSound = playVolumeFeedbackSound,
                 StartMenuSubmenuOpenDelayMs = startMenuSubmenuOpenDelayMs,
                 AutoHideTaskbar = autoHideTaskbar,
+                StartOnWindowsStartup = startOnWindowsStartup,
                 TaskbarButtonStyle = taskbarButtonStyle.ToString(),
                 TaskbarFontName = taskbarFontName,
                 TaskbarFontSize = taskbarFontSize,
@@ -2189,8 +3194,42 @@ namespace win9xplorer
                 TaskbarBaseColor = ColorTranslator.ToHtml(taskbarBaseColor),
                 TaskbarLightColor = ColorTranslator.ToHtml(taskbarLightColor),
                 TaskbarDarkColor = ColorTranslator.ToHtml(taskbarDarkColor),
-                TaskbarBevelSize = taskbarBevelSize
+                TaskbarBevelSize = taskbarBevelSize,
+                ThemeProfileName = selectedThemeProfileName,
+                QuickLaunchOrder = GetQuickLaunchOrderFromUi(),
+                ShowQuickLaunchToolbar = showQuickLaunchToolbar,
+                ShowAddressToolbar = showAddressToolbar,
+                AddressToolbarBeforeQuickLaunch = addressToolbarBeforeQuickLaunch
             });
+        }
+
+        private void ApplyWindowsStartupSetting(bool enabled)
+        {
+            const string runPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+            const string runName = "win9xplorer";
+
+            try
+            {
+                using var key = Registry.CurrentUser.CreateSubKey(runPath);
+                if (key == null)
+                {
+                    return;
+                }
+
+                if (enabled)
+                {
+                    var exePath = Application.ExecutablePath;
+                    key.SetValue(runName, $"\"{exePath}\"");
+                }
+                else
+                {
+                    key.DeleteValue(runName, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to update startup registration: {ex.Message}");
+            }
         }
 
         private Font CreateTaskbarFont(FontStyle style)
@@ -2222,6 +3261,54 @@ namespace win9xplorer
             {
                 return fallback;
             }
+        }
+
+        private ToolStripRenderer CreateWin9xMenuRenderer()
+        {
+            var selectionColor = ResolveMenuSelectionColorForCurrentTheme();
+            return new Win9xMenuRendererImpl(taskbarBaseColor, taskbarLightColor, taskbarDarkColor, selectionColor);
+        }
+
+        private Color ResolveMenuSelectionColorForCurrentTheme()
+        {
+            if (TryGetThemeProfile(selectedThemeProfileName, out var profile))
+            {
+                return profile.MenuSelectionColor;
+            }
+
+            return Color.FromArgb(0, 0, 128);
+        }
+
+        private bool TryGetThemeProfile(string? name, out ThemeController.ThemeProfile profile)
+        {
+            return themeController.TryGetProfile(name, out profile);
+        }
+
+        private void ApplyThemeProfile(string? profileName, bool preserveCustomizations)
+        {
+            if (!TryGetThemeProfile(profileName, out var profile))
+            {
+                selectedThemeProfileName = "Custom";
+                return;
+            }
+
+            selectedThemeProfileName = profile.Name;
+            if (preserveCustomizations)
+            {
+                return;
+            }
+
+            if (Enum.TryParse<TaskbarButtonStyle>(profile.ButtonStyle, ignoreCase: true, out var parsedStyle))
+            {
+                taskbarButtonStyle = parsedStyle;
+            }
+            taskbarBevelSize = profile.BevelSize;
+            taskbarFontName = profile.FontName;
+            taskbarFontSize = profile.FontSize;
+            taskbarFontColor = profile.FontColor;
+            taskbarBaseColor = profile.BaseColor;
+            taskbarLightColor = profile.LightColor;
+            taskbarDarkColor = profile.DarkColor;
         }
 
         private void RefreshTaskbarFonts()
@@ -2274,6 +3361,13 @@ namespace win9xplorer
             notificationAreaPanel.BackColor = taskbarBaseColor;
             lblClock.BackColor = taskbarBaseColor;
             customVolumeIcon.BackColor = taskbarBaseColor;
+
+            win9xMenuRenderer = CreateWin9xMenuRenderer();
+            ApplyWin9xContextMenuStyle(startMenu);
+            ApplyWin9xContextMenuStyle(taskWindowMenu);
+            ApplyWin9xContextMenuStyle(taskbarContextMenu);
+            ApplyWin9xContextMenuStyle(clockContextMenu);
+            ApplyWin9xContextMenuStyle(quickLaunchItemContextMenu);
 
             UpdateResizeUiState();
             notificationAreaPanel.Invalidate();
@@ -2349,7 +3443,7 @@ namespace win9xplorer
 
             if (button.Tag is IntPtr handle && windowsByHandle.TryGetValue(handle, out var window))
             {
-                return !window.IsMinimized && handle == lastActiveWindowHandle;
+                return !window.IsMinimized && handle == interactionStateMachine.ActiveWindowHandle;
             }
 
             return false;
@@ -2362,6 +3456,9 @@ namespace win9xplorer
                 BeginInvoke(new Action(LoadQuickLaunchButtons));
                 return;
             }
+
+            quickLaunchDragSourcePath = null;
+            ClearQuickLaunchDragPreview();
 
             foreach (var control in quickLaunchPanel.Controls.Cast<Control>().ToList())
             {
@@ -2380,15 +3477,18 @@ namespace win9xplorer
             var quickLaunchFolder = GetQuickLaunchFolderPath();
             if (Directory.Exists(quickLaunchFolder))
             {
-                var quickLaunchFiles = new[] { "*.lnk", "*.url", "*.scf" }
-                    .SelectMany(pattern => Directory.GetFiles(quickLaunchFolder, pattern))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(Path.GetFileNameWithoutExtension)
-                    .ToList();
-
-                foreach (var shortcutPath in quickLaunchFiles)
+                var settings = TaskbarSettingsStore.Load();
+                var entries = quickLaunchController.GetOrderedEntries(quickLaunchFolder, settings.QuickLaunchOrder);
+                foreach (var entry in entries)
                 {
-                    quickLaunchPanel.Controls.Add(CreateQuickLaunchButton(shortcutPath));
+                    if (entry.IsSeparator)
+                    {
+                        quickLaunchPanel.Controls.Add(CreateQuickLaunchSeparator(entry.FullPath));
+                    }
+                    else
+                    {
+                        quickLaunchPanel.Controls.Add(CreateQuickLaunchButton(entry.FullPath));
+                    }
                 }
             }
 
@@ -2441,7 +3541,36 @@ namespace win9xplorer
             quickLaunchToolTip.SetToolTip(button, displayName);
             button.Click += QuickLaunchButton_Click;
             button.MouseUp += QuickLaunchButton_MouseUp;
+            button.MouseDown += QuickLaunchButton_MouseDown;
+            button.MouseMove += QuickLaunchButton_MouseMove;
             return button;
+        }
+
+        private Control CreateQuickLaunchSeparator(string separatorPath)
+        {
+            var separator = new Panel
+            {
+                Width = 8,
+                Height = QuickLaunchButtonSize,
+                Margin = new Padding(0, 0, TaskbarButtonGap, 0),
+                Tag = separatorPath,
+                Cursor = Cursors.SizeWE
+            };
+
+            separator.Paint += (_, e) =>
+            {
+                var x = separator.Width / 2;
+                using var darkPen = new Pen(taskbarDarkColor);
+                using var lightPen = new Pen(taskbarLightColor);
+                e.Graphics.DrawLine(darkPen, x - 1, 2, x - 1, separator.Height - 3);
+                e.Graphics.DrawLine(lightPen, x, 2, x, separator.Height - 3);
+            };
+
+            separator.MouseUp += QuickLaunchSeparator_MouseUp;
+            separator.MouseDown += QuickLaunchSeparator_MouseDown;
+            separator.MouseMove += QuickLaunchSeparator_MouseMove;
+            quickLaunchToolTip.SetToolTip(separator, "Quick Launch separator");
+            return separator;
         }
 
         private static Image? GetQuickLaunchButtonIcon(string quickLaunchPath)
@@ -2548,9 +3677,16 @@ namespace win9xplorer
                 .OfType<Control>()
                 .Sum(control => control.Width + control.Margin.Horizontal);
 
-            quickLaunchPanel.Width = totalWidth > 0
+            var autoWidth = totalWidth > 0
                 ? totalWidth + quickLaunchPanel.Padding.Horizontal
                 : 0;
+
+            quickLaunchPanel.Width = autoWidth;
+        }
+
+        private List<string> GetQuickLaunchOrderFromUi()
+        {
+            return quickLaunchController.GetOrderFromPanel(quickLaunchPanel);
         }
 
         private void QuickLaunchButton_Click(object? sender, EventArgs e)
@@ -2560,7 +3696,12 @@ namespace win9xplorer
                 return;
             }
 
-            LaunchProcess(shortcutPath);
+            if (string.Equals(Path.GetExtension(shortcutPath), ".separator", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            LaunchQuickLaunchTarget(shortcutPath);
         }
 
         private void ApplyQuickLaunchButtonStyle(Button button)
@@ -2662,6 +3803,12 @@ namespace win9xplorer
 
         private void QuickLaunchButton_MouseUp(object? sender, MouseEventArgs e)
         {
+            if (e.Button == MouseButtons.Left)
+            {
+                quickLaunchDragSourcePath = null;
+                return;
+            }
+
             if (e.Button != MouseButtons.Right || sender is not Button button || button.Tag is not string shortcutPath)
             {
                 return;
@@ -2678,7 +3825,29 @@ namespace win9xplorer
                 return;
             }
 
-            LaunchProcess(quickLaunchContextShortcutPath);
+            LaunchQuickLaunchTarget(quickLaunchContextShortcutPath);
+        }
+
+        private void LaunchQuickLaunchTarget(string shortcutPath)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = shortcutPath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to launch quick launch target '{shortcutPath}': {ex.Message}");
+                MessageBox.Show(
+                    this,
+                    $"Unable to launch '{Path.GetFileNameWithoutExtension(shortcutPath)}'.",
+                    "Quick Launch",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         }
 
         private void RemoveQuickLaunchContextItem()
@@ -2692,6 +3861,7 @@ namespace win9xplorer
             {
                 File.Delete(quickLaunchContextShortcutPath);
                 LoadQuickLaunchButtons();
+                SaveTaskbarSettings();
             }
             catch (Exception ex)
             {
@@ -2721,15 +3891,331 @@ namespace win9xplorer
             }
         }
 
+        private void OpenQuickLaunchContextItemLocation()
+        {
+            if (string.IsNullOrWhiteSpace(quickLaunchContextShortcutPath) || !File.Exists(quickLaunchContextShortcutPath))
+            {
+                return;
+            }
+
+            LaunchProcess("explorer.exe", $"/select,\"{quickLaunchContextShortcutPath}\"");
+        }
+
+        private void RenameQuickLaunchContextItem()
+        {
+            if (string.IsNullOrWhiteSpace(quickLaunchContextShortcutPath) || !File.Exists(quickLaunchContextShortcutPath))
+            {
+                return;
+            }
+
+            try
+            {
+                var originalPath = quickLaunchContextShortcutPath;
+                var originalName = Path.GetFileNameWithoutExtension(originalPath);
+                var extension = Path.GetExtension(originalPath);
+                var input = Microsoft.VisualBasic.Interaction.InputBox("Enter a new name:", "Rename Quick Launch Item", originalName);
+                if (string.IsNullOrWhiteSpace(input) || input.Equals(originalName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var safeName = string.Join("_", input.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries)).Trim();
+                if (string.IsNullOrWhiteSpace(safeName))
+                {
+                    return;
+                }
+
+                var destination = Path.Combine(Path.GetDirectoryName(originalPath) ?? string.Empty, safeName + extension);
+                destination = GetUniqueFilePath(Path.GetDirectoryName(destination) ?? string.Empty, Path.GetFileName(destination));
+                File.Move(originalPath, destination);
+                quickLaunchContextShortcutPath = destination;
+                LoadQuickLaunchButtons();
+                SaveTaskbarSettings();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to rename quick launch item: {ex.Message}");
+            }
+        }
+
+        private void MoveQuickLaunchContextItem(int direction)
+        {
+            if (string.IsNullOrWhiteSpace(quickLaunchContextShortcutPath) || !File.Exists(quickLaunchContextShortcutPath))
+            {
+                return;
+            }
+
+            var controls = quickLaunchPanel.Controls.Cast<Control>().ToList();
+            var currentIndex = controls.FindIndex(control => string.Equals(control.Tag as string, quickLaunchContextShortcutPath, StringComparison.OrdinalIgnoreCase));
+            if (currentIndex < 0)
+            {
+                return;
+            }
+
+            var targetIndex = Math.Clamp(currentIndex + direction, 0, controls.Count - 1);
+            if (targetIndex == currentIndex)
+            {
+                return;
+            }
+
+            var control = controls[currentIndex];
+            quickLaunchPanel.Controls.SetChildIndex(control, targetIndex);
+            quickLaunchPanel.Invalidate();
+            ResizeQuickLaunchPanel();
+            SaveTaskbarSettings();
+        }
+
+        private void AddQuickLaunchSeparator()
+        {
+            try
+            {
+                var quickLaunchFolder = GetQuickLaunchFolderPath();
+                Directory.CreateDirectory(quickLaunchFolder);
+                var separatorPath = GetUniqueFilePath(quickLaunchFolder, "Separator.separator");
+                File.WriteAllText(separatorPath, string.Empty);
+                LoadQuickLaunchButtons();
+                SaveTaskbarSettings();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to add quick launch separator: {ex.Message}");
+            }
+        }
+
+        private void QuickLaunchButton_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || sender is not Button button || button.Tag is not string path)
+            {
+                return;
+            }
+
+            quickLaunchDragSourcePath = path;
+            quickLaunchDragStartPoint = e.Location;
+        }
+
+        private void QuickLaunchButton_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if ((Control.MouseButtons & MouseButtons.Left) == 0 || string.IsNullOrWhiteSpace(quickLaunchDragSourcePath) || sender is not Control control)
+            {
+                return;
+            }
+
+            if (Math.Abs(e.X - quickLaunchDragStartPoint.X) < SystemInformation.DragSize.Width / 2 &&
+                Math.Abs(e.Y - quickLaunchDragStartPoint.Y) < SystemInformation.DragSize.Height / 2)
+            {
+                return;
+            }
+
+            var data = new DataObject();
+            data.SetData("QuickLaunchItemPath", quickLaunchDragSourcePath);
+            control.DoDragDrop(data, DragDropEffects.Move);
+        }
+
+        private void QuickLaunchSeparator_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || sender is not Control control || control.Tag is not string path)
+            {
+                return;
+            }
+
+            quickLaunchDragSourcePath = path;
+            quickLaunchDragStartPoint = e.Location;
+        }
+
+        private void QuickLaunchSeparator_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if ((Control.MouseButtons & MouseButtons.Left) == 0 || string.IsNullOrWhiteSpace(quickLaunchDragSourcePath) || sender is not Control control)
+            {
+                return;
+            }
+
+            if (Math.Abs(e.X - quickLaunchDragStartPoint.X) < SystemInformation.DragSize.Width / 2 &&
+                Math.Abs(e.Y - quickLaunchDragStartPoint.Y) < SystemInformation.DragSize.Height / 2)
+            {
+                return;
+            }
+
+            var data = new DataObject();
+            data.SetData("QuickLaunchItemPath", quickLaunchDragSourcePath);
+            control.DoDragDrop(data, DragDropEffects.Move);
+        }
+
+        private void QuickLaunchSeparator_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                quickLaunchDragSourcePath = null;
+                return;
+            }
+
+            if (e.Button != MouseButtons.Right || sender is not Control control || control.Tag is not string shortcutPath)
+            {
+                return;
+            }
+
+            quickLaunchContextShortcutPath = shortcutPath;
+            quickLaunchItemContextMenu.Show(control, e.Location);
+        }
+
+        private void ReorderQuickLaunchItemByDropPoint(string sourcePath, Point dropPoint)
+        {
+            var controls = quickLaunchPanel.Controls.Cast<Control>().ToList();
+            var sourceControl = controls.FirstOrDefault(control => string.Equals(control.Tag as string, sourcePath, StringComparison.OrdinalIgnoreCase));
+            if (sourceControl == null)
+            {
+                return;
+            }
+
+            var targetIndex = GetQuickLaunchDropInsertPosition(dropPoint);
+
+            var sourceIndex = quickLaunchPanel.Controls.GetChildIndex(sourceControl);
+            if (sourceIndex < targetIndex)
+            {
+                targetIndex--;
+            }
+
+            targetIndex = Math.Clamp(targetIndex, 0, quickLaunchPanel.Controls.Count - 1);
+            quickLaunchPanel.Controls.SetChildIndex(sourceControl, targetIndex);
+            quickLaunchPanel.Invalidate();
+            ResizeQuickLaunchPanel();
+            SaveTaskbarSettings();
+        }
+
         private void QuickLaunchPanel_DragEnter(object? sender, DragEventArgs e)
         {
+            if (e.Data?.GetDataPresent("QuickLaunchItemPath") == true)
+            {
+                e.Effect = DragDropEffects.Move;
+                return;
+            }
+
             e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true
                 ? DragDropEffects.Copy
                 : DragDropEffects.None;
         }
 
+        private void QuickLaunchPanel_DragOver(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent("QuickLaunchItemPath") != true)
+            {
+                ClearQuickLaunchDragPreview();
+                return;
+            }
+
+            e.Effect = DragDropEffects.Move;
+            var sourcePath = e.Data.GetData("QuickLaunchItemPath") as string;
+            var dropPoint = quickLaunchPanel.PointToClient(new Point(e.X, e.Y));
+            UpdateQuickLaunchDragPreview(dropPoint, sourcePath);
+        }
+
+        private void QuickLaunchPanel_DragLeave(object? sender, EventArgs e)
+        {
+            ClearQuickLaunchDragPreview();
+        }
+
+        private void QuickLaunchPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            if (quickLaunchPreviewInsertPosition < 0)
+            {
+                return;
+            }
+
+            var x = GetQuickLaunchPreviewX(quickLaunchPreviewInsertPosition);
+            x = Math.Clamp(x, 0, Math.Max(0, quickLaunchPanel.ClientSize.Width - 1));
+            var top = 2;
+            var bottom = Math.Max(top, quickLaunchPanel.ClientSize.Height - 3);
+
+            using var lightPen = new Pen(taskbarLightColor);
+            using var darkPen = new Pen(taskbarDarkColor);
+            e.Graphics.DrawLine(lightPen, x, top, x, bottom);
+            if (x + 1 < quickLaunchPanel.ClientSize.Width)
+            {
+                e.Graphics.DrawLine(darkPen, x + 1, top, x + 1, bottom);
+            }
+        }
+
+        private void UpdateQuickLaunchDragPreview(Point dropPoint, string? sourcePath)
+        {
+            var insertPosition = GetQuickLaunchDropInsertPosition(dropPoint);
+            if (!string.IsNullOrWhiteSpace(sourcePath))
+            {
+                var sourceControl = quickLaunchPanel.Controls
+                    .OfType<Control>()
+                    .FirstOrDefault(control => string.Equals(control.Tag as string, sourcePath, StringComparison.OrdinalIgnoreCase));
+
+                if (sourceControl != null)
+                {
+                    var sourceIndex = quickLaunchPanel.Controls.GetChildIndex(sourceControl);
+                    if (insertPosition > sourceIndex)
+                    {
+                        insertPosition--;
+                    }
+                }
+            }
+
+            insertPosition = Math.Clamp(insertPosition, 0, quickLaunchPanel.Controls.Count);
+            if (quickLaunchPreviewInsertPosition == insertPosition)
+            {
+                return;
+            }
+
+            quickLaunchPreviewInsertPosition = insertPosition;
+            quickLaunchPanel.Invalidate();
+        }
+
+        private void ClearQuickLaunchDragPreview()
+        {
+            if (quickLaunchPreviewInsertPosition < 0)
+            {
+                return;
+            }
+
+            quickLaunchPreviewInsertPosition = -1;
+            quickLaunchPanel.Invalidate();
+        }
+
+        private int GetQuickLaunchDropInsertPosition(Point dropPoint)
+        {
+            var controls = quickLaunchPanel.Controls.Cast<Control>().ToList();
+            return quickLaunchController.GetDropInsertPosition(controls, dropPoint);
+        }
+
+        private int GetQuickLaunchPreviewX(int insertPosition)
+        {
+            var controls = quickLaunchPanel.Controls.Cast<Control>().ToList();
+            if (controls.Count == 0 || insertPosition <= 0)
+            {
+                return 0;
+            }
+
+            if (insertPosition >= controls.Count)
+            {
+                var last = controls[^1];
+                return last.Right + Math.Max(1, last.Margin.Right / 2);
+            }
+
+            var next = controls[insertPosition];
+            return Math.Max(0, next.Left - Math.Max(1, next.Margin.Left / 2));
+        }
+
         private void QuickLaunchPanel_DragDrop(object? sender, DragEventArgs e)
         {
+            if (e.Data?.GetDataPresent("QuickLaunchItemPath") == true)
+            {
+                var sourcePath = e.Data.GetData("QuickLaunchItemPath") as string;
+                if (!string.IsNullOrWhiteSpace(sourcePath))
+                {
+                    ReorderQuickLaunchItemByDropPoint(sourcePath, quickLaunchPanel.PointToClient(new Point(e.X, e.Y)));
+                }
+
+                ClearQuickLaunchDragPreview();
+                quickLaunchDragSourcePath = null;
+
+                return;
+            }
+
+            ClearQuickLaunchDragPreview();
+
             if (!e.Data!.GetDataPresent(DataFormats.FileDrop))
             {
                 return;
@@ -2779,6 +4265,7 @@ namespace win9xplorer
             if (createdAny)
             {
                 LoadQuickLaunchButtons();
+                SaveTaskbarSettings();
             }
         }
 
@@ -3062,13 +4549,20 @@ namespace win9xplorer
             resizeGripPanel.Visible = true;
             resizeGripPanel.Height = ResizeGripHeight;
             resizeGripPanel.Cursor = taskbarLocked ? Cursors.Default : Cursors.SizeNS;
+            var toolbarCursor = taskbarLocked ? Cursors.Default : Cursors.SizeWE;
+            quickLaunchGripPanel.Cursor = toolbarCursor;
+            addressToolbarGripPanel.Cursor = toolbarCursor;
             resizeGripPanel.Invalidate();
+            quickLaunchGripPanel.Invalidate();
+            addressToolbarGripPanel.Invalidate();
+            runningProgramsGripPanel.Invalidate();
         }
 
         private void SetTaskbarLocked(bool locked)
         {
             taskbarLocked = locked;
             UpdateResizeUiState();
+            ApplyToolbarLayout(refreshBounds: false);
             SetTaskbarBounds();
             RefreshTaskbar();
             SaveTaskbarSettings();
@@ -3081,8 +4575,8 @@ namespace win9xplorer
                 return;
             }
 
-            var resizeHotZone = ResizeGripHeight + 1;
-            if (e.Y > resizeHotZone)
+            var resizeHotZone = ResizeGripHeight;
+            if (e.Y >= resizeHotZone)
             {
                 return;
             }
@@ -3170,6 +4664,7 @@ namespace win9xplorer
 
         private void ShowOptionsDialog()
         {
+            var originalState = CaptureOptionsState();
             using var dialog = new TaskbarOptionsForm(
                 startMenuIconSize,
                 taskIconSize,
@@ -3177,6 +4672,7 @@ namespace win9xplorer
                 playVolumeFeedbackSound,
                 startMenuSubmenuOpenDelayMs,
                 autoHideTaskbar,
+                startOnWindowsStartup,
                 taskbarButtonStyle.ToString(),
                 taskbarBevelSize,
                 taskbarFontName,
@@ -3185,18 +4681,103 @@ namespace win9xplorer
                 taskbarBaseColor,
                 taskbarLightColor,
                 taskbarDarkColor,
-                OpenQuickLaunchFolderInExplorerForm,
-                () => Application.Exit());
-            dialog.ApplyRequested += () => ApplyOptionsFromDialog(dialog);
+                selectedThemeProfileName,
+                OpenQuickLaunchFolderInExplorerForm);
+            dialog.ApplyRequested += () => ApplyOptionsFromDialog(dialog, persist: false);
             if (dialog.ShowDialog(this) != DialogResult.OK)
             {
+                RestoreOptionsState(originalState, persist: false);
                 return;
             }
 
-            ApplyOptionsFromDialog(dialog);
+            ApplyOptionsFromDialog(dialog, persist: true);
         }
 
-        private void ApplyOptionsFromDialog(TaskbarOptionsForm dialog)
+        private void ShowDiagnosticsPanel()
+        {
+            if (diagnosticsPanel != null && !diagnosticsPanel.IsDisposed)
+            {
+                diagnosticsPanel.Show();
+                diagnosticsPanel.BringToFront();
+                diagnosticsPanel.Activate();
+                return;
+            }
+
+            diagnosticsPanel = new DiagnosticsPanelForm(CreateDiagnosticsSnapshot);
+            diagnosticsPanel.FormClosed += (_, _) => diagnosticsPanel = null;
+            diagnosticsPanel.Show(this);
+        }
+
+        private DiagnosticsPanelForm.DiagnosticsSnapshot CreateDiagnosticsSnapshot()
+        {
+            var trayIcons = shellManager.NotificationArea.TrayIcons;
+            var visibleTrayIcons = trayIcons.Count(icon => !icon.IsHidden && icon.Icon != null && !ShouldHideTrayIcon(icon));
+
+            return new DiagnosticsPanelForm.DiagnosticsSnapshot(
+                ActiveHandle: $"0x{interactionStateMachine.ActiveWindowHandle.ToInt64():X}",
+                ForegroundHandleBeforeClick: $"0x{interactionStateMachine.ForegroundWindowBeforeTaskClick.ToInt64():X}",
+                WindowCount: windowsByHandle.Count,
+                TaskButtonCount: taskButtons.Count,
+                TrayIconCount: trayIcons.Count,
+                VisibleTrayIconCount: visibleTrayIcons,
+                ProgramCacheEntries: programFolderCache.Count,
+                SearchCacheEntries: programSearchEntriesCache.Count,
+                QuickLaunchControlCount: quickLaunchPanel.Controls.Count,
+                ThemeProfile: selectedThemeProfileName,
+                Timestamp: DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+        }
+
+        private OptionsState CaptureOptionsState()
+        {
+            return new OptionsState(
+                startMenuIconSize,
+                taskIconSize,
+                lazyLoadProgramsSubmenu,
+                playVolumeFeedbackSound,
+                startMenuSubmenuOpenDelayMs,
+                autoHideTaskbar,
+                startOnWindowsStartup,
+                taskbarButtonStyle,
+                taskbarBevelSize,
+                taskbarFontName,
+                taskbarFontSize,
+                taskbarFontColor,
+                taskbarBaseColor,
+                taskbarLightColor,
+                taskbarDarkColor,
+                selectedThemeProfileName);
+        }
+
+        private void RestoreOptionsState(OptionsState state, bool persist)
+        {
+            startMenuIconSize = state.StartMenuIconSize;
+            taskIconSize = state.TaskIconSize;
+            lazyLoadProgramsSubmenu = state.LazyLoadProgramsSubmenu;
+            playVolumeFeedbackSound = state.PlayVolumeFeedbackSound;
+            startMenuSubmenuOpenDelayMs = state.StartMenuSubmenuOpenDelayMs;
+            autoHideTaskbar = state.AutoHideTaskbar;
+            startOnWindowsStartup = state.StartOnWindowsStartup;
+            taskbarButtonStyle = state.ButtonStyle;
+            taskbarBevelSize = state.BevelSize;
+            taskbarFontName = state.FontName;
+            taskbarFontSize = state.FontSize;
+            taskbarFontColor = state.FontColor;
+            taskbarBaseColor = state.BaseColor;
+            taskbarLightColor = state.LightColor;
+            taskbarDarkColor = state.DarkColor;
+            selectedThemeProfileName = state.ThemeProfileName;
+            ApplyWindowsStartupSetting(startOnWindowsStartup);
+
+            volumePopup.PlayFeedbackSoundOnMouseUp = playVolumeFeedbackSound;
+            ApplyIconSizeSettings();
+
+            if (persist)
+            {
+                SaveTaskbarSettings();
+            }
+        }
+
+        private void ApplyOptionsFromDialog(TaskbarOptionsForm dialog, bool persist)
         {
             startMenuIconSize = dialog.StartMenuIconSize;
             taskIconSize = dialog.TaskIconSize;
@@ -3204,6 +4785,7 @@ namespace win9xplorer
             playVolumeFeedbackSound = dialog.PlayVolumeFeedbackSound;
             startMenuSubmenuOpenDelayMs = dialog.StartMenuSubmenuOpenDelayMs;
             autoHideTaskbar = dialog.AutoHideTaskbar;
+            startOnWindowsStartup = dialog.StartOnWindowsStartup;
             taskbarBevelSize = Math.Clamp(dialog.TaskbarBevelSize, 1, 4);
             taskbarFontName = dialog.TaskbarFontName;
             taskbarFontSize = dialog.TaskbarFontSize;
@@ -3215,9 +4797,17 @@ namespace win9xplorer
             {
                 taskbarButtonStyle = parsedStyle;
             }
+
+            selectedThemeProfileName = dialog.SelectedThemeProfileName;
+            ApplyThemeProfile(selectedThemeProfileName, preserveCustomizations: selectedThemeProfileName.Equals("Custom", StringComparison.OrdinalIgnoreCase));
+            ApplyWindowsStartupSetting(startOnWindowsStartup);
             volumePopup.PlayFeedbackSoundOnMouseUp = playVolumeFeedbackSound;
             ApplyIconSizeSettings();
-            SaveTaskbarSettings();
+
+            if (persist)
+            {
+                SaveTaskbarSettings();
+            }
         }
 
         private void OpenQuickLaunchFolderInExplorerForm()
@@ -3283,28 +4873,7 @@ namespace win9xplorer
 
         private void BtnStart_Click(object? sender, EventArgs e)
         {
-            if ((DateTime.UtcNow - lastStartMenuClosedAtUtc).TotalMilliseconds < 250)
-            {
-                startMenuWasVisibleOnStartMouseDown = false;
-                return;
-            }
-
-            if (startMenuWasVisibleOnStartMouseDown)
-            {
-                if (startMenu.Visible)
-                {
-                    startMenu.Hide();
-                }
-
-                ResetStartMenuSearch();
-                ResetStartMenuSubmenuSessionCache();
-                btnStart.Invalidate();
-                startMenuWasVisibleOnStartMouseDown = false;
-                return;
-            }
-
-            ToggleStartMenu();
-            startMenuWasVisibleOnStartMouseDown = false;
+            startMenuController.OnStartButtonClick();
         }
 
         private void BtnStart_MouseDown(object? sender, MouseEventArgs e)
@@ -3314,7 +4883,7 @@ namespace win9xplorer
                 return;
             }
 
-            startMenuWasVisibleOnStartMouseDown = startMenu.Visible;
+            startMenuController.OnStartButtonMouseDown();
         }
 
         private void ToggleStartMenu()
@@ -3518,7 +5087,7 @@ namespace win9xplorer
         private void SyncTrayIcons()
         {
             var currentIcons = shellManager.NotificationArea.TrayIcons.ToList();
-            var visibleIcons = currentIcons.Where(icon => !icon.IsHidden && icon.Icon != null && !IsVolumeTrayIcon(icon)).ToList();
+            var visibleIcons = currentIcons.Where(icon => !icon.IsHidden && icon.Icon != null && !ShouldHideTrayIcon(icon)).ToList();
 
             var removedIcons = trayIconControls.Keys.Where(icon => !visibleIcons.Contains(icon)).ToList();
             foreach (var icon in removedIcons)
@@ -3562,7 +5131,7 @@ namespace win9xplorer
             trayIconsPanel.Controls.SetChildIndex(customVolumeIcon, trayIconsPanel.Controls.Count - 1);
 
             ResizeTrayPanel();
-            UpdateTrayHostSizeData();
+            RefreshTrayHostPlacement();
         }
 
         private PictureBox CreateTrayIconControl(TrayNotifyIcon icon)
@@ -3646,7 +5215,7 @@ namespace win9xplorer
             }
 
             UpdateTrayIconPlacement(icon, control);
-            icon.IconMouseDown(ConvertMouseButton(e.Button), GetCursorPositionParam(), SystemInformation.DoubleClickTime);
+            trayIconInteractionService.ForwardMouseDown(icon, e.Button, GetCursorPositionParam(), SystemInformation.DoubleClickTime);
         }
 
         private void TrayIcon_MouseUp(object? sender, MouseEventArgs e)
@@ -3663,7 +5232,7 @@ namespace win9xplorer
             }
 
             UpdateTrayIconPlacement(icon, control);
-            icon.IconMouseUp(ConvertMouseButton(e.Button), GetCursorPositionParam(), SystemInformation.DoubleClickTime);
+            trayIconInteractionService.ForwardMouseUp(icon, e.Button, GetCursorPositionParam(), SystemInformation.DoubleClickTime);
         }
 
         private void TrayIcon_MouseDoubleClick(object? sender, MouseEventArgs e)
@@ -3673,7 +5242,7 @@ namespace win9xplorer
                 return;
             }
 
-            if (e.Button == MouseButtons.Left && IsWindowsSecurityTrayIcon(icon))
+            if (e.Button == MouseButtons.Left && trayController.ShouldOpenWindowsSecurityCenterOnDoubleClick(icon))
             {
                 OpenWindowsSecurityCenter();
                 return;
@@ -3697,7 +5266,7 @@ namespace win9xplorer
                 return;
             }
 
-            icon.IconMouseMove(GetCursorPositionParam());
+            trayIconInteractionService.ForwardMouseMove(icon, GetCursorPositionParam());
         }
 
         private void TrayIcon_MouseEnter(object? sender, EventArgs e)
@@ -3708,7 +5277,7 @@ namespace win9xplorer
             }
 
             UpdateTrayIconPlacement(icon, control);
-            icon.IconMouseEnter(GetCursorPositionParam());
+            trayIconInteractionService.ForwardMouseEnter(icon, GetCursorPositionParam());
         }
 
         private void TrayIcon_MouseLeave(object? sender, EventArgs e)
@@ -3718,7 +5287,7 @@ namespace win9xplorer
                 return;
             }
 
-            icon.IconMouseLeave(GetCursorPositionParam());
+            trayIconInteractionService.ForwardMouseLeave(icon, GetCursorPositionParam());
         }
 
         private static WpfMouseButton ConvertMouseButton(MouseButtons button)
@@ -3739,79 +5308,17 @@ namespace win9xplorer
 
         private bool IsVolumeTrayIcon(TrayNotifyIcon icon)
         {
-            if (icon.GUID != Guid.Empty &&
-                icon.GUID.ToString().Equals(NotificationArea.VOLUME_GUID, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Identifier) &&
-                icon.Identifier.Contains("volume", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Path) &&
-                (icon.Path.Contains("SndVol", StringComparison.OrdinalIgnoreCase) ||
-                 icon.Path.Contains("Audio", StringComparison.OrdinalIgnoreCase) ||
-                 icon.Path.Contains("AudioSrv", StringComparison.OrdinalIgnoreCase) ||
-                 icon.Path.Contains("SystemSettings", StringComparison.OrdinalIgnoreCase)))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Title) &&
-                icon.Title.Contains("volume", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            return false;
+            return trayController.IsVolumeTrayIcon(icon);
         }
 
-        private static bool IsWindowsSecurityTrayIcon(TrayNotifyIcon icon)
+        private bool ShouldHideTrayIcon(TrayNotifyIcon icon)
         {
-            if (!string.IsNullOrWhiteSpace(icon.Path) &&
-                icon.Path.Contains("SecurityHealthSystray", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Identifier) &&
-                icon.Identifier.Contains("SecurityHealth", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Title) &&
-                (icon.Title.Contains("Windows Security", StringComparison.OrdinalIgnoreCase) ||
-                 icon.Title.Contains("Windows 安全", StringComparison.OrdinalIgnoreCase) ||
-                 icon.Title.Contains("安全性", StringComparison.OrdinalIgnoreCase)))
-            {
-                return true;
-            }
-
-            return false;
+            return trayController.ShouldHideTrayIcon(icon);
         }
 
-        private static string GetTrayHoverMessage(TrayNotifyIcon icon)
+        private string GetTrayHoverMessage(TrayNotifyIcon icon)
         {
-            if (!string.IsNullOrWhiteSpace(icon.Title))
-            {
-                return icon.Title.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Identifier))
-            {
-                return icon.Identifier.Trim();
-            }
-
-            if (!string.IsNullOrWhiteSpace(icon.Path))
-            {
-                return Path.GetFileNameWithoutExtension(icon.Path);
-            }
-
-            return "Tray icon";
+            return trayController.GetHoverMessage(icon);
         }
 
         private static void OpenWindowsSecurityCenter()
@@ -3903,6 +5410,11 @@ namespace win9xplorer
 
                 if (message == WinApi.WM_KEYDOWN || message == WinApi.WM_SYSKEYDOWN)
                 {
+                    if (vkCode == (int)Keys.F4 && IsAltKeyDown() && WinApi.GetForegroundWindow() == Handle)
+                    {
+                        return (IntPtr)1;
+                    }
+
                     if (isWinKey)
                     {
                         winKeyPressed = true;
@@ -3923,9 +5435,17 @@ namespace win9xplorer
                         return (IntPtr)0; // Don't block other Win+ shortcuts
                     }
 
-                    if (HandleStartMenuSearchKey(vkCode))
+                    if (startMenu.Visible)
                     {
-                        return (IntPtr)1;
+                        if (IsStartMenuSearchTextBoxFocused() && !IsStartMenuNavigationVirtualKey(vkCode))
+                        {
+                            return WinApi.CallNextHookEx(keyboardHookHandle, nCode, wParam, lParam);
+                        }
+
+                        if (HandleStartMenuSearchKey(vkCode))
+                        {
+                            return (IntPtr)1;
+                        }
                     }
                 }
                 else if ((message == WinApi.WM_KEYUP || message == WinApi.WM_SYSKEYUP) && isWinKey)
@@ -4052,7 +5572,7 @@ namespace win9xplorer
 
             if (currentHandles.Contains(foregroundHandle))
             {
-                lastActiveWindowHandle = foregroundHandle;
+                interactionStateMachine.SetActiveWindowHandle(foregroundHandle);
             }
             else
             {
@@ -4061,7 +5581,7 @@ namespace win9xplorer
 
                 if (currentHandles.Contains(activeByState))
                 {
-                    lastActiveWindowHandle = activeByState;
+                    interactionStateMachine.SetActiveWindowHandle(activeByState);
                 }
             }
 
@@ -4184,7 +5704,7 @@ namespace win9xplorer
                 }
             }
 
-            var isActive = window.Handle == lastActiveWindowHandle || window.State == ApplicationWindow.WindowState.Active;
+            var isActive = window.Handle == interactionStateMachine.ActiveWindowHandle || window.State == ApplicationWindow.WindowState.Active;
 
             if (isActive)
             {
@@ -4295,13 +5815,48 @@ namespace win9xplorer
 
         private void ResizeTaskButtons()
         {
-            var count = Math.Max(taskButtonsPanel.Controls.Count, 1);
-            var availableWidth = Math.Max(taskButtonsPanel.ClientSize.Width - 4, btnStart.Width);
-            var widthPerButton = Math.Clamp(availableWidth / count, btnStart.Width, 220);
+            var buttonCount = taskButtonsPanel.Controls.Count;
+            if (buttonCount == 0)
+            {
+                return;
+            }
+
+            var rows = Math.Clamp(taskbarRows, 1, 3);
+            var columns = Math.Max(1, (int)Math.Ceiling(buttonCount / (double)rows));
+            var totalGapWidth = Math.Max(0, columns - 1) * TaskbarButtonGap;
+            var availableWidth = Math.Max(taskButtonsPanel.ClientSize.Width - totalGapWidth - taskButtonsPanel.Padding.Horizontal, btnStart.Width);
+
+            var minWidth = rows > 1 ? TaskButtonMinWidthMultiRow : btnStart.Width;
+            var widthPerButton = Math.Clamp(availableWidth / columns, minWidth, TaskButtonMaxWidth);
+
+            taskButtonsPanel.WrapContents = rows > 1;
+            taskButtonsPanel.FlowDirection = FlowDirection.LeftToRight;
 
             foreach (Control control in taskButtonsPanel.Controls)
             {
                 control.Width = widthPerButton;
+                control.Height = TaskbarButtonHeight;
+                control.Margin = new Padding(0, 0, TaskbarButtonGap, TaskButtonRowBottomGap);
+            }
+
+            taskButtonsPanel.PerformLayout();
+        }
+
+        private void RefreshTaskButtonAndTrayLayout()
+        {
+            ApplyToolbarLayout(refreshBounds: false);
+            ResizeTaskButtons();
+            ResizeTrayPanel();
+            RefreshTrayHostPlacement();
+        }
+
+        private void RefreshTrayHostPlacement()
+        {
+            UpdateTrayHostSizeData();
+
+            foreach (var pair in trayIconControls)
+            {
+                UpdateTrayIconPlacement(pair.Key, pair.Value);
             }
         }
 
@@ -4327,9 +5882,9 @@ namespace win9xplorer
 
                 window.BringToFront();
                 WinApi.SetForegroundWindow(handle);
-                lastActiveWindowHandle = handle;
+                interactionStateMachine.SetActiveWindowHandle(handle);
             }
-            else if (handle == foregroundWindowBeforeTaskClick || handle == lastActiveWindowHandle)
+            else if (interactionStateMachine.ShouldMinimizeTaskWindow(handle))
             {
                 window.Minimize();
                 if (!window.IsMinimized && !WinApi.IsIconic(handle))
@@ -4337,19 +5892,16 @@ namespace win9xplorer
                     WinApi.ShowWindow(handle, WinApi.SW_MINIMIZE);
                 }
 
-                if (lastActiveWindowHandle == handle)
-                {
-                    lastActiveWindowHandle = IntPtr.Zero;
-                }
+                interactionStateMachine.ClearActiveWindowHandleIfMatches(handle);
             }
             else
             {
                 window.BringToFront();
                 WinApi.SetForegroundWindow(handle);
-                lastActiveWindowHandle = handle;
+                interactionStateMachine.SetActiveWindowHandle(handle);
             }
 
-            foregroundWindowBeforeTaskClick = IntPtr.Zero;
+            interactionStateMachine.ClearTaskButtonMouseState();
 
             RefreshTaskbar();
         }
@@ -4361,7 +5913,7 @@ namespace win9xplorer
                 return;
             }
 
-            foregroundWindowBeforeTaskClick = WinApi.GetForegroundWindow();
+            interactionStateMachine.RecordTaskButtonMouseDown(WinApi.GetForegroundWindow());
         }
 
         private void TaskButton_MouseUp(object? sender, MouseEventArgs e)
@@ -4421,7 +5973,7 @@ namespace win9xplorer
                 {
                     Bounds = newBounds;
                 }
-                UpdateTrayHostSizeData();
+                RefreshTrayHostPlacement();
             }
         }
 

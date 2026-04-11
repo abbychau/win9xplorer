@@ -16,11 +16,13 @@ namespace win9xplorer
 
         public bool AutoHideTaskbar { get; set; } = false;
 
-        public string TaskbarButtonStyle { get; set; } = "Modern";
+        public bool StartOnWindowsStartup { get; set; } = false;
 
-        public string TaskbarFontName { get; set; } = "MS Sans Serif";
+        public string TaskbarButtonStyle { get; set; } = "Win98";
 
-        public float TaskbarFontSize { get; set; } = 8.25f;
+        public string TaskbarFontName { get; set; } = "\u65B0\u7D30\u660E\u9AD4";
+
+        public float TaskbarFontSize { get; set; } = 9.0f;
 
         public string TaskbarFontColor { get; set; } = "#000000";
 
@@ -35,6 +37,16 @@ namespace win9xplorer
         public string TaskbarDarkColor { get; set; } = "#808080";
 
         public int TaskbarBevelSize { get; set; } = 1;
+
+        public string ThemeProfileName { get; set; } = "Custom";
+
+        public List<string> QuickLaunchOrder { get; set; } = new();
+
+        public bool ShowQuickLaunchToolbar { get; set; } = true;
+
+        public bool ShowAddressToolbar { get; set; } = false;
+
+        public bool AddressToolbarBeforeQuickLaunch { get; set; } = false;
     }
 
     internal static class TaskbarSettingsStore

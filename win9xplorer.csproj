@@ -7,6 +7,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>Windows 9x Icons\Desktop.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -25,9 +26,36 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <!-- Copy Windows XP Icons folder to output directory -->
+  <!-- Embed only referenced Windows XP icons into assembly -->
   <ItemGroup>
-    <None Include="Windows XP Icons\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Windows XP Icons\Add Network Place.png" />
+    <EmbeddedResource Include="Windows XP Icons\Additional Settings.png" />
+    <EmbeddedResource Include="Windows XP Icons\Address Book.png" />
+    <EmbeddedResource Include="Windows XP Icons\Application Window.png" />
+    <EmbeddedResource Include="Windows XP Icons\Audio Devices.png" />
+    <EmbeddedResource Include="Windows XP Icons\Back.png" />
+    <EmbeddedResource Include="Windows XP Icons\Checklist.png" />
+    <EmbeddedResource Include="Windows XP Icons\Desktop.png" />
+    <EmbeddedResource Include="Windows XP Icons\Detail View.png" />
+    <EmbeddedResource Include="Windows XP Icons\Double Click.png" />
+    <EmbeddedResource Include="Windows XP Icons\Explorer Delete.png" />
+    <EmbeddedResource Include="Windows XP Icons\Explorer.png" />
+    <EmbeddedResource Include="Windows XP Icons\Favorites.png" />
+    <EmbeddedResource Include="Windows XP Icons\Folder Closed.png" />
+    <EmbeddedResource Include="Windows XP Icons\Folder View - Classic.png" />
+    <EmbeddedResource Include="Windows XP Icons\Folder View - Common Tasks.png" />
+    <EmbeddedResource Include="Windows XP Icons\Forward.png" />
+    <EmbeddedResource Include="Windows XP Icons\Go.png" />
+    <EmbeddedResource Include="Windows XP Icons\Icon View.png" />
+    <EmbeddedResource Include="Windows XP Icons\IE Refresh.png" />
+    <EmbeddedResource Include="Windows XP Icons\My Documents.png" />
+    <EmbeddedResource Include="Windows XP Icons\Open.png" />
+    <EmbeddedResource Include="Windows XP Icons\Run.png" />
+    <EmbeddedResource Include="Windows XP Icons\Start Menu Programs.png" />
+    <EmbeddedResource Include="Windows XP Icons\Taskbar and Start Menu.png" />
+    <EmbeddedResource Include="Windows XP Icons\Thumbnail View.png" />
+    <EmbeddedResource Include="Windows XP Icons\Tile View.png" />
+    <EmbeddedResource Include="Windows XP Icons\Up.png" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="ManagedShell" Version="0.0.337" />
