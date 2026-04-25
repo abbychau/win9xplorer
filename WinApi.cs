@@ -185,6 +185,7 @@ namespace win9xplorer
         internal enum AppBarMsg
         {
             New = 0x00000001,
+            QueryPos = 0x00000002,
             Remove = 0x00000002,
             SetPos = 0x00000003,
             GetPos = 0x00000004,

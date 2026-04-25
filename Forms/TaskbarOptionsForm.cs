@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace win9xplorer
@@ -249,6 +250,15 @@ namespace win9xplorer
             };
             AddLabeledControl(startMenuLayout, "Submenu open delay (ms):", submenuOpenDelayInput);
             AddLabeledControl(startMenuLayout, "Programs loading:", lazyLoadProgramsCheckBox);
+            var openUserProgramsButton = new Button { Text = "Open User Programs Folder...", AutoSize = true };
+            var openCommonProgramsButton = new Button { Text = "Open Common Programs Folder...", AutoSize = true };
+            var openStartupFolderButton = new Button { Text = "Open Startup Folder...", AutoSize = true };
+            openUserProgramsButton.Click += (_, _) => OpenSpecialFolder(Environment.SpecialFolder.Programs);
+            openCommonProgramsButton.Click += (_, _) => OpenSpecialFolder(Environment.SpecialFolder.CommonPrograms);
+            openStartupFolderButton.Click += (_, _) => OpenSpecialFolder(Environment.SpecialFolder.Startup);
+            AddLabeledControl(startMenuLayout, "Start menu folders:", CreateStackedContainer(
+                CreateRowContainer(openUserProgramsButton, openCommonProgramsButton),
+                openStartupFolderButton));
 
             var trayLayout = CreateTabLayout();
             trayTab.Controls.Add(trayLayout);
@@ -270,9 +280,16 @@ namespace win9xplorer
                 AutoSize = true
             };
             openQuickLaunchFolderButton.Click += (_, _) => this.openQuickLaunchFolderAction();
+            var openNotificationSettingsButton = new Button
+            {
+                Text = "Open Windows Notification Settings...",
+                AutoSize = true
+            };
+            openNotificationSettingsButton.Click += (_, _) => OpenUriOrFallback("ms-settings:notifications", "control.exe");
             AddLabeledControl(trayLayout, "Volume feedback:", playVolumeFeedbackSoundCheckBox);
             AddLabeledControl(trayLayout, "Volume UI:", useClassicVolumePopupCheckBox);
             AddLabeledControl(trayLayout, "Quick Launch:", openQuickLaunchFolderButton);
+            AddLabeledControl(trayLayout, "Notifications:", openNotificationSettingsButton);
 
             var buttons = new FlowLayoutPanel
             {
@@ -367,6 +384,52 @@ namespace win9xplorer
             panel.Controls.Add(top, 0, 0);
             panel.Controls.Add(bottom, 0, 1);
             return panel;
+        }
+
+        private static void OpenSpecialFolder(Environment.SpecialFolder folder)
+        {
+            var path = Environment.GetFolderPath(folder);
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            {
+                System.Media.SystemSounds.Beep.Play();
+                return;
+            }
+
+            OpenPath(path);
+        }
+
+        private static void OpenUriOrFallback(string uri, string fallbackFileName)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = uri,
+                    UseShellExecute = true
+                });
+                return;
+            }
+            catch
+            {
+            }
+
+            OpenPath(fallbackFileName);
+        }
+
+        private static void OpenPath(string path)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = path,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Unable to open '{path}'.{Environment.NewLine}{ex.Message}", "Taskbar Options", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private static string ToHex(Color color) => ColorTranslator.ToHtml(color).ToUpperInvariant();

@@ -25,6 +25,31 @@ namespace win9xplorer
             return Process.GetProcessesByName("Spotify").Length > 0;
         }
 
+        public string GetNowPlayingTitle()
+        {
+            try
+            {
+                return Process.GetProcessesByName("Spotify")
+                    .Select(process =>
+                    {
+                        using (process)
+                        {
+                            return process.MainWindowTitle?.Trim() ?? string.Empty;
+                        }
+                    })
+                    .Where(title => !string.IsNullOrWhiteSpace(title))
+                    .FirstOrDefault(title =>
+                        !title.Equals("Spotify", StringComparison.OrdinalIgnoreCase) &&
+                        !title.Equals("Spotify Premium", StringComparison.OrdinalIgnoreCase) &&
+                        !title.Equals("Spotify Free", StringComparison.OrdinalIgnoreCase))
+                    ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         public bool TryExecute(SpotifyCommand command)
         {
             if (!IsSpotifyRunning())
