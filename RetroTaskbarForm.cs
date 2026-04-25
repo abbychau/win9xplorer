@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Drawing.Drawing2D;
+using System.Globalization;
 using Microsoft.Win32;
 using Microsoft.VisualBasic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Media.Imaging;
 using ManagedShell;
 using ManagedShell.WindowsTray;
@@ -35,6 +38,7 @@ namespace win9xplorer
         private const int MaxSubmenuColumns = 3;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_APPWINDOW = 0x00040000;
+        private static readonly Color InputIndicatorBackColor = Color.FromArgb(0, 0, 128);
         private static readonly string[] ProgramLaunchPatterns =
         {
             "*.lnk",
@@ -54,14 +58,21 @@ namespace win9xplorer
         private readonly Panel startHostPanel;
         private readonly Panel taskButtonsHostPanel;
         private readonly Panel addressToolbarPanel;
+        private readonly Panel spotifyToolbarPanel;
         private readonly Panel startToolbarSeparatorPanel;
         private readonly Panel toolbarsSeparatorPanel;
+        private readonly Panel spotifyToolbarSeparatorPanel;
+        private readonly Panel taskButtonsSeparatorPanel;
         private readonly Panel quickLaunchGripPanel;
         private readonly Panel addressToolbarGripPanel;
+        private readonly Panel spotifyToolbarGripPanel;
         private readonly Panel runningProgramsGripPanel;
         private readonly Panel addressInputHostPanel;
         private readonly Panel notificationAreaPanel;
         private readonly Button btnStart;
+        private readonly Button btnSpotifyPrevious;
+        private readonly Button btnSpotifyPlayPause;
+        private readonly Button btnSpotifyNext;
         private readonly TextBox addressToolbarTextBox;
         private IntPtr appBarHandle = IntPtr.Zero;
         private bool isAppBarRegistered = false;
@@ -71,11 +82,15 @@ namespace win9xplorer
         private readonly FlowLayoutPanel taskButtonsPanel;
         private readonly FlowLayoutPanel trayIconsPanel;
         private readonly Label lblClock;
+        private readonly Label languageIndicatorLabel;
+        private readonly Label imeIndicatorLabel;
         private readonly System.Windows.Forms.Timer refreshTimer;
         private ContextMenuStrip startMenu;
         private readonly ContextMenuStrip taskWindowMenu;
         private readonly ContextMenuStrip taskbarContextMenu;
         private readonly ContextMenuStrip clockContextMenu;
+        private readonly ContextMenuStrip languageIndicatorContextMenu;
+        private readonly ContextMenuStrip imeIndicatorContextMenu;
         private readonly ContextMenuStrip quickLaunchItemContextMenu;
         private readonly ToolTip taskToolTip;
         private readonly ToolTip trayToolTip;
@@ -92,6 +107,9 @@ namespace win9xplorer
         private readonly Image runMenuIcon;
         private readonly Image quickLaunchDesktopIcon;
         private readonly Image customVolumeIconImage;
+        private readonly Image spotifyPreviousIconImage;
+        private readonly Image spotifyPlayIconImage;
+        private readonly Image spotifyNextIconImage;
         private sealed record ProgramMenuNode(string FolderPath, int Depth);
         private readonly Dictionary<IntPtr, Button> taskButtons = new();
         private readonly Dictionary<IntPtr, ApplicationWindow> windowsByHandle = new();
@@ -100,6 +118,7 @@ namespace win9xplorer
         private readonly TaskbarInteractionStateMachine interactionStateMachine;
         private readonly StartMenuController startMenuController;
         private readonly QuickLaunchController quickLaunchController = new();
+        private readonly SpotifyController spotifyController = new();
         private readonly TrayController trayController = new();
         private readonly ThemeController themeController = new();
         private DiagnosticsPanelForm? diagnosticsPanel;
@@ -128,11 +147,15 @@ namespace win9xplorer
         private Color taskbarFontColor = Color.Black;
         private bool lazyLoadProgramsSubmenu = true;
         private bool playVolumeFeedbackSound = true;
+        private bool useClassicVolumePopup;
         private int startMenuSubmenuOpenDelayMs = 200;
         private bool autoHideTaskbar;
         private bool startOnWindowsStartup;
         private bool showQuickLaunchToolbar = true;
         private bool showAddressToolbar;
+        private bool showSpotifyToolbar = true;
+        private bool isSpotifyRunning;
+        private DateTime spotifyStateLastCheckedUtc = DateTime.MinValue;
         private bool addressToolbarBeforeQuickLaunch;
         private bool isToolbarReorderDragging;
         private bool toolbarOrderChangedDuringDrag;
@@ -194,6 +217,7 @@ namespace win9xplorer
             int TaskIconSize,
             bool LazyLoadProgramsSubmenu,
             bool PlayVolumeFeedbackSound,
+            bool UseClassicVolumePopup,
             int StartMenuSubmenuOpenDelayMs,
             bool AutoHideTaskbar,
             bool StartOnWindowsStartup,
@@ -401,11 +425,13 @@ namespace win9xplorer
             taskIconSize = Math.Clamp(settings.TaskIconSize, 16, 32);
             lazyLoadProgramsSubmenu = settings.LazyLoadProgramsSubmenu;
             playVolumeFeedbackSound = settings.PlayVolumeFeedbackSound;
+            useClassicVolumePopup = settings.UseClassicVolumePopup;
             startMenuSubmenuOpenDelayMs = Math.Clamp(settings.StartMenuSubmenuOpenDelayMs, 0, 1500);
             autoHideTaskbar = settings.AutoHideTaskbar;
             startOnWindowsStartup = settings.StartOnWindowsStartup;
             showQuickLaunchToolbar = settings.ShowQuickLaunchToolbar;
             showAddressToolbar = settings.ShowAddressToolbar;
+            showSpotifyToolbar = settings.ShowSpotifyToolbar;
             addressToolbarBeforeQuickLaunch = settings.AddressToolbarBeforeQuickLaunch;
             taskbarFontName = string.IsNullOrWhiteSpace(settings.TaskbarFontName) ? "\u65B0\u7D30\u660E\u9AD4" : settings.TaskbarFontName;
             taskbarFontSize = Math.Clamp(settings.TaskbarFontSize, 7f, 16f);
@@ -458,7 +484,10 @@ namespace win9xplorer
             settingsMenuIcon = LoadMenuAsset("Additional Settings.png", SystemIcons.Shield.ToBitmap());
             runMenuIcon = LoadMenuAsset("Run.png", SystemIcons.Question.ToBitmap());
             quickLaunchDesktopIcon = LoadMenuAsset("Desktop.png", SystemIcons.Application.ToBitmap());
-            customVolumeIconImage = LoadMenuAsset("Audio Devices.png", SystemIcons.Information.ToBitmap());
+            customVolumeIconImage = LoadVolumeTrayIconAsset(LoadAssetBySuffix("Volume.png", LoadMenuAsset("Audio Devices.png", SystemIcons.Information.ToBitmap())));
+            spotifyPreviousIconImage = LoadPlayerControlIconAsset("previous.png", SystemIcons.Application.ToBitmap());
+            spotifyPlayIconImage = LoadPlayerControlIconAsset("play.png", SystemIcons.Application.ToBitmap());
+            spotifyNextIconImage = LoadPlayerControlIconAsset("next.png", SystemIcons.Application.ToBitmap());
 
             resizeGripPanel = new Panel
             {
@@ -506,6 +535,26 @@ namespace win9xplorer
             };
             toolbarsSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
 
+            spotifyToolbarSeparatorPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 4,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor
+            };
+            spotifyToolbarSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
+
+            taskButtonsSeparatorPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 4,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor
+            };
+            taskButtonsSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
+
             btnStart = new Button
             {
                 Text = "Start",
@@ -534,6 +583,32 @@ namespace win9xplorer
                 BackColor = taskbarBaseColor,
                 Margin = Padding.Empty,
                 Font = normalFont
+            };
+
+            languageIndicatorLabel = new Label
+            {
+                Width = 18,
+                Height = 18,
+                Margin = new Padding(1, 0, 1, 0),
+                TextAlign = ContentAlignment.MiddleCenter,
+                BorderStyle = BorderStyle.None,
+                BackColor = InputIndicatorBackColor,
+                ForeColor = Color.White,
+                Font = normalFont,
+                Text = "En"
+            };
+
+            imeIndicatorLabel = new Label
+            {
+                Width = 18,
+                Height = 18,
+                Margin = new Padding(1, 0, 1, 0),
+                TextAlign = ContentAlignment.MiddleCenter,
+                BorderStyle = BorderStyle.None,
+                BackColor = InputIndicatorBackColor,
+                ForeColor = Color.White,
+                Font = normalFont,
+                Text = "Al"
             };
 
             quickLaunchPanel = new FlowLayoutPanel
@@ -622,6 +697,88 @@ namespace win9xplorer
 
             addressToolbarPanel.Controls.Add(addressInputHostPanel);
 
+            spotifyToolbarPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = (QuickLaunchButtonSize * 3) + (TaskbarButtonGap * 2) + 4,
+                Margin = Padding.Empty,
+                Padding = new Padding(2, 2, 2, 1),
+                BackColor = taskbarBaseColor,
+                BorderStyle = BorderStyle.None,
+                Visible = showSpotifyToolbar
+            };
+
+            spotifyToolbarGripPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 8,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor,
+                Cursor = Cursors.SizeWE,
+                Visible = false
+            };
+            spotifyToolbarGripPanel.Paint += ToolbarGripPanel_Paint;
+
+            btnSpotifyPrevious = new Button
+            {
+                Width = QuickLaunchButtonSize,
+                Height = QuickLaunchButtonSize,
+                Dock = DockStyle.Left,
+                Image = ResizeIconImage(spotifyPreviousIconImage, GetSpotifyControlIconSize()),
+                ImageAlign = ContentAlignment.MiddleCenter,
+                Text = string.Empty,
+                Font = normalFont,
+                Margin = new Padding(0, 0, 2, 0),
+                Padding = Padding.Empty,
+                TabStop = false
+            };
+            btnSpotifyPrevious.Click += (_, _) => ExecuteSpotifyCommand(SpotifyController.SpotifyCommand.PreviousTrack);
+            ApplyQuickLaunchButtonStyle(btnSpotifyPrevious);
+            AttachNoFocusCue(btnSpotifyPrevious);
+
+            btnSpotifyPlayPause = new Button
+            {
+                Width = QuickLaunchButtonSize,
+                Height = QuickLaunchButtonSize,
+                Dock = DockStyle.Left,
+                Image = ResizeIconImage(spotifyPlayIconImage, GetSpotifyControlIconSize()),
+                ImageAlign = ContentAlignment.MiddleCenter,
+                Text = string.Empty,
+                Font = normalFont,
+                Margin = new Padding(0, 0, 2, 0),
+                Padding = Padding.Empty,
+                TabStop = false
+            };
+            btnSpotifyPlayPause.Click += (_, _) => ExecuteSpotifyCommand(SpotifyController.SpotifyCommand.PlayPause);
+            ApplyQuickLaunchButtonStyle(btnSpotifyPlayPause);
+            AttachNoFocusCue(btnSpotifyPlayPause);
+
+            btnSpotifyNext = new Button
+            {
+                Width = QuickLaunchButtonSize,
+                Height = QuickLaunchButtonSize,
+                Dock = DockStyle.Left,
+                Image = ResizeIconImage(spotifyNextIconImage, GetSpotifyControlIconSize()),
+                ImageAlign = ContentAlignment.MiddleCenter,
+                Text = string.Empty,
+                Font = normalFont,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                TabStop = false
+            };
+            btnSpotifyNext.Click += (_, _) => ExecuteSpotifyCommand(SpotifyController.SpotifyCommand.NextTrack);
+            ApplyQuickLaunchButtonStyle(btnSpotifyNext);
+            AttachNoFocusCue(btnSpotifyNext);
+
+            spotifyToolbarPanel.Controls.Add(btnSpotifyNext);
+            spotifyToolbarPanel.Controls.Add(btnSpotifyPlayPause);
+            spotifyToolbarPanel.Controls.Add(btnSpotifyPrevious);
+            isSpotifyRunning = spotifyController.IsSpotifyRunning();
+            btnSpotifyPrevious.Enabled = isSpotifyRunning;
+            btnSpotifyPlayPause.Enabled = isSpotifyRunning;
+            btnSpotifyNext.Enabled = isSpotifyRunning;
+
             notificationAreaPanel = new Panel
             {
                 Dock = DockStyle.Right,
@@ -698,6 +855,8 @@ namespace win9xplorer
             taskWindowMenu = BuildTaskWindowMenu();
             taskbarContextMenu = BuildTaskbarContextMenu();
             clockContextMenu = BuildClockContextMenu();
+            languageIndicatorContextMenu = BuildLanguageIndicatorContextMenu();
+            imeIndicatorContextMenu = BuildImeIndicatorContextMenu();
             quickLaunchItemContextMenu = BuildQuickLaunchItemContextMenu();
             taskToolTip = new ToolTip();
             trayToolTip = new ToolTip
@@ -728,7 +887,12 @@ namespace win9xplorer
             Controls.Add(contentPanel);
             Controls.Add(resizeGripPanel);
             trayIconsPanel.Controls.Add(customVolumeIcon);
+            trayIconsPanel.Controls.Add(languageIndicatorLabel);
             trayToolTip.SetToolTip(customVolumeIcon, "Volume");
+            quickLaunchToolTip.SetToolTip(btnSpotifyPrevious, "Spotify Previous");
+            quickLaunchToolTip.SetToolTip(btnSpotifyPlayPause, "Spotify Play/Pause");
+            quickLaunchToolTip.SetToolTip(btnSpotifyNext, "Spotify Next");
+            UpdateInputMethodIndicators();
             ApplyToolbarLayout(refreshBounds: false);
             UpdateResizeUiState();
 
@@ -748,9 +912,25 @@ namespace win9xplorer
             lblClock.MouseDown += ChildTaskbarResize_MouseDown;
             lblClock.MouseMove += ChildTaskbarResize_MouseMove;
             lblClock.MouseUp += ChildTaskbarResize_MouseUp;
+            languageIndicatorLabel.MouseUp += InputIndicatorLabel_MouseUp;
             quickLaunchPanel.MouseDown += ChildTaskbarResize_MouseDown;
             quickLaunchPanel.MouseMove += ChildTaskbarResize_MouseMove;
             quickLaunchPanel.MouseUp += ChildTaskbarResize_MouseUp;
+            spotifyToolbarPanel.MouseDown += ChildTaskbarResize_MouseDown;
+            spotifyToolbarPanel.MouseMove += ChildTaskbarResize_MouseMove;
+            spotifyToolbarPanel.MouseUp += ChildTaskbarResize_MouseUp;
+            spotifyToolbarGripPanel.MouseDown += ChildTaskbarResize_MouseDown;
+            spotifyToolbarGripPanel.MouseMove += ChildTaskbarResize_MouseMove;
+            spotifyToolbarGripPanel.MouseUp += ChildTaskbarResize_MouseUp;
+            btnSpotifyPrevious.MouseDown += ChildTaskbarResize_MouseDown;
+            btnSpotifyPrevious.MouseMove += ChildTaskbarResize_MouseMove;
+            btnSpotifyPrevious.MouseUp += ChildTaskbarResize_MouseUp;
+            btnSpotifyPlayPause.MouseDown += ChildTaskbarResize_MouseDown;
+            btnSpotifyPlayPause.MouseMove += ChildTaskbarResize_MouseMove;
+            btnSpotifyPlayPause.MouseUp += ChildTaskbarResize_MouseUp;
+            btnSpotifyNext.MouseDown += ChildTaskbarResize_MouseDown;
+            btnSpotifyNext.MouseMove += ChildTaskbarResize_MouseMove;
+            btnSpotifyNext.MouseUp += ChildTaskbarResize_MouseUp;
             trayIconsPanel.MouseDown += ChildTaskbarResize_MouseDown;
             trayIconsPanel.MouseMove += ChildTaskbarResize_MouseMove;
             trayIconsPanel.MouseUp += ChildTaskbarResize_MouseUp;
@@ -1018,6 +1198,8 @@ namespace win9xplorer
             taskWindowMenu.Dispose();
             taskbarContextMenu.Dispose();
             clockContextMenu.Dispose();
+            languageIndicatorContextMenu.Dispose();
+            imeIndicatorContextMenu.Dispose();
             quickLaunchItemContextMenu.Dispose();
             diagnosticsPanel?.Close();
             diagnosticsPanel?.Dispose();
@@ -1036,9 +1218,16 @@ namespace win9xplorer
             runMenuIcon.Dispose();
             quickLaunchDesktopIcon.Dispose();
             customVolumeIcon.MouseUp -= CustomVolumeIcon_MouseUp;
+            languageIndicatorLabel.MouseUp -= InputIndicatorLabel_MouseUp;
+            btnSpotifyPrevious.Image?.Dispose();
+            btnSpotifyPlayPause.Image?.Dispose();
+            btnSpotifyNext.Image?.Dispose();
             customVolumeIcon.Image?.Dispose();
             customVolumeIcon.Dispose();
             customVolumeIconImage.Dispose();
+            spotifyPreviousIconImage.Dispose();
+            spotifyPlayIconImage.Dispose();
+            spotifyNextIconImage.Dispose();
             volumePopup.Dispose();
             timeDetailsPopup.Dispose();
             UninstallKeyboardHook();
@@ -1111,7 +1300,7 @@ namespace win9xplorer
             }
             menu.Items.Add(programsItem);
 
-            var windowsAppsItem = CreateMenuItem("Windows Apps", SystemIcons.Application.ToBitmap(), null);
+            var windowsAppsItem = CreateMenuItem("Windows Apps", LoadMenuAsset("Application Window.png", SystemIcons.Application.ToBitmap()), null);
             var windowsAppsLoadingItem = CreateMenuItem("(Loading...)", null, null);
             windowsAppsLoadingItem.Enabled = false;
             windowsAppsItem.DropDownItems.Add(windowsAppsLoadingItem);
@@ -1531,7 +1720,7 @@ namespace win9xplorer
             items.Clear();
 
             var myDocuments = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            items.Add(CreateMenuItem("My Documents", SystemIcons.Application.ToBitmap(), (_, _) => OpenFolder(myDocuments)));
+            items.Add(CreateMenuItem("My Documents", documentsMenuIcon, (_, _) => OpenFolder(myDocuments)));
 
             var recent = Environment.GetFolderPath(Environment.SpecialFolder.Recent);
             if (Directory.Exists(recent))
@@ -1848,11 +2037,6 @@ namespace win9xplorer
             if (vkCode == (int)Keys.Right || vkCode == (int)Keys.Left || vkCode == (int)Keys.Tab)
             {
                 return HandleStartMenuNavigationKey(vkCode);
-            }
-
-            if (startMenuSearchQuery.Length == 0 && TryActivateStartMenuAccelerator(vkCode))
-            {
-                return true;
             }
 
             var searchChar = TryConvertVirtualKeyToSearchChar(vkCode);
@@ -2346,7 +2530,9 @@ namespace win9xplorer
             }
 
             var shellPath = $"shell:AppsFolder\\{entry.LaunchPath}";
-            return GetSmallShellIconFromShellPath(shellPath) ?? SystemIcons.Application.ToBitmap();
+            return GetSmallShellIcon(shellPath, isDirectory: false)
+                ?? GetSmallShellIconFromShellPath(shellPath)
+                ?? LoadMenuAsset("Application Window.png", SystemIcons.Application.ToBitmap());
         }
 
         private static char? TryConvertVirtualKeyToSearchChar(int vkCode)
@@ -2396,6 +2582,8 @@ namespace win9xplorer
         {
             var shfi = new WinApi.SHFILEINFO();
             var flags = WinApi.SHGFI_ICON | WinApi.SHGFI_SMALLICON;
+            var isShellNamespacePath = pathOrExtension.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ||
+                                       pathOrExtension.Contains("AppsFolder", StringComparison.OrdinalIgnoreCase);
 
             if (isDirectory)
             {
@@ -2404,7 +2592,7 @@ namespace win9xplorer
             }
             else
             {
-                if (!File.Exists(pathOrExtension))
+                if (!isShellNamespacePath && !File.Exists(pathOrExtension))
                 {
                     flags |= WinApi.SHGFI_USEFILEATTRIBUTES;
                 }
@@ -2462,13 +2650,17 @@ namespace win9xplorer
         {
             try
             {
+                var diskImage = TryLoadAssetFromDisk(fileName);
+                if (diskImage != null)
+                {
+                    return diskImage;
+                }
+
                 var assembly = typeof(RetroTaskbarForm).Assembly;
                 var resourceName = assembly
                     .GetManifestResourceNames()
                     .FirstOrDefault(name =>
-                        name.EndsWith(fileName, StringComparison.OrdinalIgnoreCase) &&
-                        (name.Contains("Windows XP Icons", StringComparison.OrdinalIgnoreCase) ||
-                         name.Contains("Windows_XP_Icons", StringComparison.OrdinalIgnoreCase)));
+                        name.EndsWith(fileName, StringComparison.OrdinalIgnoreCase));
 
                 if (!string.IsNullOrWhiteSpace(resourceName))
                 {
@@ -2490,12 +2682,138 @@ namespace win9xplorer
             return new Bitmap(fallback);
         }
 
+        private static Image LoadAssetBySuffix(string fileName, Image fallback)
+        {
+            try
+            {
+                var diskImage = TryLoadAssetFromDisk(fileName);
+                if (diskImage != null)
+                {
+                    return diskImage;
+                }
+
+                var assembly = typeof(RetroTaskbarForm).Assembly;
+                var resourceName = assembly
+                    .GetManifestResourceNames()
+                    .FirstOrDefault(name => name.EndsWith(fileName, StringComparison.OrdinalIgnoreCase));
+
+                if (!string.IsNullOrWhiteSpace(resourceName))
+                {
+                    using var stream = assembly.GetManifestResourceStream(resourceName);
+                    if (stream != null)
+                    {
+                        using var image = Image.FromStream(stream);
+                        return new Bitmap(image);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to load asset '{fileName}': {ex.Message}");
+            }
+
+            return new Bitmap(fallback);
+        }
+
+        private static Image? TryLoadAssetFromDisk(string fileName)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "Windows XP Icons", fileName),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Windows XP Icons", fileName)),
+                Path.Combine(Environment.CurrentDirectory, "Windows XP Icons", fileName)
+            };
+
+            foreach (var path in candidates)
+            {
+                try
+                {
+                    if (!File.Exists(path))
+                    {
+                        continue;
+                    }
+
+                    using var stream = File.OpenRead(path);
+                    using var image = Image.FromStream(stream);
+                    return new Bitmap(image);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to load asset from '{path}': {ex.Message}");
+                }
+            }
+
+            return null;
+        }
+
+        private static Image LoadVolumeTrayIconAsset(Image fallback)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "Windows XP Icons", "Volume.png"),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Windows XP Icons", "Volume.png")),
+                Path.Combine(Environment.CurrentDirectory, "Windows XP Icons", "Volume.png")
+            };
+
+            foreach (var path in candidates)
+            {
+                try
+                {
+                    if (!File.Exists(path))
+                    {
+                        continue;
+                    }
+
+                    using var stream = File.OpenRead(path);
+                    using var image = Image.FromStream(stream);
+                    return new Bitmap(image);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to load volume icon from '{path}': {ex.Message}");
+                }
+            }
+
+            return new Bitmap(fallback);
+        }
+
+        private static Image LoadPlayerControlIconAsset(string fileName, Image fallback)
+        {
+            var candidates = new[]
+            {
+                Path.Combine(AppContext.BaseDirectory, "player Icons", fileName),
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "player Icons", fileName)),
+                Path.Combine(Environment.CurrentDirectory, "player Icons", fileName)
+            };
+
+            foreach (var path in candidates)
+            {
+                try
+                {
+                    if (!File.Exists(path))
+                    {
+                        continue;
+                    }
+
+                    using var stream = File.OpenRead(path);
+                    using var image = Image.FromStream(stream);
+                    return new Bitmap(image);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to load player icon from '{path}': {ex.Message}");
+                }
+            }
+
+            return new Bitmap(fallback);
+        }
+
         private ContextMenuStrip BuildTaskWindowMenu()
         {
             var menu = new ContextMenuStrip
             {
-                ShowImageMargin = true,
-                ShowCheckMargin = true,
+                ShowImageMargin = false,
+                ShowCheckMargin = false,
                 Font = normalFont
             };
             ApplyWin9xContextMenuStyle(menu);
@@ -2525,6 +2843,7 @@ namespace win9xplorer
         {
             var menu = new ContextMenuStrip
             {
+                ShowCheckMargin = true,
                 ShowImageMargin = false,
                 Font = normalFont
             };
@@ -2533,12 +2852,14 @@ namespace win9xplorer
             var toolbarsItem = new ToolStripMenuItem("Toolbars");
             var quickLaunchToolbarItem = new ToolStripMenuItem("Quick Launch", null, (_, _) => ToggleQuickLaunchToolbar());
             var addressToolbarItem = new ToolStripMenuItem("Address", null, (_, _) => ToggleAddressToolbar());
+            var spotifyToolbarItem = new ToolStripMenuItem("Spotify Controls", null, (_, _) => ToggleSpotifyToolbar());
             var linksToolbarItem = new ToolStripMenuItem("Links") { Enabled = false };
             var desktopToolbarItem = new ToolStripMenuItem("Desktop") { Enabled = false };
             var addressLeftItem = new ToolStripMenuItem("Address Left of Quick Launch", null, (_, _) => SetToolbarOrder(addressFirst: true));
             var quickLaunchLeftItem = new ToolStripMenuItem("Quick Launch Left of Address", null, (_, _) => SetToolbarOrder(addressFirst: false));
             toolbarsItem.DropDownItems.Add(quickLaunchToolbarItem);
             toolbarsItem.DropDownItems.Add(addressToolbarItem);
+            toolbarsItem.DropDownItems.Add(spotifyToolbarItem);
             toolbarsItem.DropDownItems.Add(linksToolbarItem);
             toolbarsItem.DropDownItems.Add(desktopToolbarItem);
             toolbarsItem.DropDownItems.Add(new ToolStripSeparator());
@@ -2573,12 +2894,20 @@ namespace win9xplorer
             appMenuItem.DropDownItems.Add("Options...", null, (_, _) => ShowOptionsDialog());
             appMenuItem.DropDownItems.Add(new ToolStripSeparator());
             appMenuItem.DropDownItems.Add("Exit App", null, (_, _) => RequestAppExit());
+            appMenuItem.MouseUp += (_, e) =>
+            {
+                if ((e.Button == MouseButtons.Left || e.Button == MouseButtons.Right) && !appMenuItem.DropDown.Visible)
+                {
+                    appMenuItem.ShowDropDown();
+                }
+            };
             menu.Items.Add(appMenuItem);
 
             menu.Opening += (_, _) =>
             {
                 quickLaunchToolbarItem.Checked = showQuickLaunchToolbar;
                 addressToolbarItem.Checked = showAddressToolbar;
+                spotifyToolbarItem.Checked = showSpotifyToolbar;
                 addressLeftItem.Enabled = showQuickLaunchToolbar && showAddressToolbar;
                 quickLaunchLeftItem.Enabled = showQuickLaunchToolbar && showAddressToolbar;
                 addressLeftItem.Checked = showQuickLaunchToolbar && showAddressToolbar && addressToolbarBeforeQuickLaunch;
@@ -2607,6 +2936,34 @@ namespace win9xplorer
             SaveTaskbarSettings();
         }
 
+        private void ToggleSpotifyToolbar()
+        {
+            showSpotifyToolbar = !showSpotifyToolbar;
+            ApplyToolbarLayout();
+            SaveTaskbarSettings();
+        }
+
+        private void ExecuteSpotifyCommand(SpotifyController.SpotifyCommand command)
+        {
+            if (spotifyController.TryExecute(command))
+            {
+                return;
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "spotify:",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Unable to launch Spotify: {ex.Message}");
+            }
+        }
+
         private void SetToolbarOrder(bool addressFirst)
         {
             addressToolbarBeforeQuickLaunch = addressFirst;
@@ -2618,14 +2975,17 @@ namespace win9xplorer
         {
             quickLaunchPanel.Visible = showQuickLaunchToolbar;
             addressToolbarPanel.Visible = showAddressToolbar;
+            spotifyToolbarPanel.Visible = showSpotifyToolbar;
             quickLaunchGripPanel.Visible = showQuickLaunchToolbar;
             addressToolbarGripPanel.Visible = showAddressToolbar;
+            spotifyToolbarGripPanel.Visible = showSpotifyToolbar;
             runningProgramsGripPanel.Visible = true;
 
             contentPanel.SuspendLayout();
             contentPanel.Controls.Clear();
             contentPanel.Controls.Add(taskButtonsHostPanel);
             contentPanel.Controls.Add(notificationAreaPanel);
+            contentPanel.Controls.Add(taskButtonsSeparatorPanel);
 
             if (showQuickLaunchToolbar && showAddressToolbar)
             {
@@ -2661,7 +3021,20 @@ namespace win9xplorer
                 }
             }
 
-            startToolbarSeparatorPanel.Visible = showQuickLaunchToolbar || showAddressToolbar;
+            var hasAnyToolbar = showQuickLaunchToolbar || showAddressToolbar;
+            if (showSpotifyToolbar)
+            {
+                if (hasAnyToolbar)
+                {
+                    contentPanel.Controls.Add(spotifyToolbarSeparatorPanel);
+                }
+
+                contentPanel.Controls.Add(spotifyToolbarPanel);
+                contentPanel.Controls.Add(spotifyToolbarGripPanel);
+                hasAnyToolbar = true;
+            }
+
+            startToolbarSeparatorPanel.Visible = hasAnyToolbar;
             if (startToolbarSeparatorPanel.Visible)
             {
                 contentPanel.Controls.Add(startToolbarSeparatorPanel);
@@ -3008,6 +3381,263 @@ namespace win9xplorer
             return menu;
         }
 
+        private ContextMenuStrip BuildLanguageIndicatorContextMenu()
+        {
+            var menu = new ContextMenuStrip
+            {
+                ShowImageMargin = false,
+                Font = normalFont
+            };
+            ApplyWin9xContextMenuStyle(menu);
+
+            menu.Opening += (_, _) => PopulateLanguageIndicatorContextMenu(menu);
+            return menu;
+        }
+
+        private ContextMenuStrip BuildImeIndicatorContextMenu()
+        {
+            var menu = new ContextMenuStrip
+            {
+                ShowImageMargin = false,
+                Font = normalFont
+            };
+            ApplyWin9xContextMenuStyle(menu);
+
+            menu.Opening += (_, _) => PopulateImeIndicatorContextMenu(menu);
+
+            return menu;
+        }
+
+        private void PopulateImeIndicatorContextMenu(ContextMenuStrip menu)
+        {
+            menu.Items.Clear();
+
+            var imeTargetWindow = GetImeTargetWindowHandle();
+            if (PopulateNativeImeMenu(menu, imeTargetWindow))
+            {
+                return;
+            }
+
+            if (!TryGetImeStatus(imeTargetWindow, out var imeOpen, out var conversionMode, out var sentenceMode))
+            {
+                menu.Items.Add("IME options unavailable").Enabled = false;
+                return;
+            }
+
+            var nativeInputItem = new ToolStripMenuItem("Native input", null, (_, _) =>
+            {
+                ApplyImeStateToForegroundWindow(true, conversionMode | WinApi.IME_CMODE_NATIVE, sentenceMode);
+            })
+            {
+                Checked = imeOpen
+            };
+
+            var alphanumericItem = new ToolStripMenuItem("Alphanumeric", null, (_, _) =>
+            {
+                ApplyImeStateToForegroundWindow(false, conversionMode & ~WinApi.IME_CMODE_NATIVE, sentenceMode);
+            })
+            {
+                Checked = !imeOpen
+            };
+
+            menu.Items.Add(nativeInputItem);
+            menu.Items.Add(alphanumericItem);
+        }
+
+        private bool PopulateNativeImeMenu(ContextMenuStrip menu, IntPtr targetWindow)
+        {
+            if (targetWindow == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var inputContext = WinApi.ImmGetContext(targetWindow);
+            if (inputContext == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                var allMenuTypes = WinApi.IGIMII_CMODE |
+                                   WinApi.IGIMII_SMODE |
+                                   WinApi.IGIMII_CONFIGURE |
+                                   WinApi.IGIMII_TOOLS |
+                                   WinApi.IGIMII_HELP |
+                                   WinApi.IGIMII_OTHER |
+                                   WinApi.IGIMII_INPUTTOOLS;
+                return AppendNativeImeMenuItems(menu.Items, inputContext, allMenuTypes, parentMenuItem: null) > 0;
+            }
+            finally
+            {
+                WinApi.ImmReleaseContext(targetWindow, inputContext);
+            }
+        }
+
+        private int AppendNativeImeMenuItems(ToolStripItemCollection targetItems, IntPtr inputContext, uint menuType, WinApi.IMEMENUITEMINFOW? parentMenuItem)
+        {
+            uint entryCount;
+            if (parentMenuItem.HasValue)
+            {
+                var parent = parentMenuItem.Value;
+                parent.cbSize = (uint)Marshal.SizeOf<WinApi.IMEMENUITEMINFOW>();
+                entryCount = WinApi.ImmGetImeMenuItemsW(inputContext, WinApi.IGIMIF_RIGHTMENU, menuType, ref parent, null, 0);
+            }
+            else
+            {
+                entryCount = WinApi.ImmGetImeMenuItemsW(inputContext, WinApi.IGIMIF_RIGHTMENU, menuType, IntPtr.Zero, null, 0);
+            }
+
+            if (entryCount == 0)
+            {
+                return 0;
+            }
+
+            var itemsBuffer = new WinApi.IMEMENUITEMINFOW[entryCount];
+            var entrySize = (uint)Marshal.SizeOf<WinApi.IMEMENUITEMINFOW>();
+            for (var i = 0; i < itemsBuffer.Length; i++)
+            {
+                itemsBuffer[i].cbSize = entrySize;
+                itemsBuffer[i].szString = string.Empty;
+            }
+
+            uint copiedCount;
+            if (parentMenuItem.HasValue)
+            {
+                var parent = parentMenuItem.Value;
+                parent.cbSize = entrySize;
+                copiedCount = WinApi.ImmGetImeMenuItemsW(inputContext, WinApi.IGIMIF_RIGHTMENU, menuType, ref parent, itemsBuffer, (uint)(itemsBuffer.Length * entrySize));
+            }
+            else
+            {
+                copiedCount = WinApi.ImmGetImeMenuItemsW(inputContext, WinApi.IGIMIF_RIGHTMENU, menuType, IntPtr.Zero, itemsBuffer, (uint)(itemsBuffer.Length * entrySize));
+            }
+
+            var addedCount = 0;
+            for (var i = 0; i < copiedCount && i < itemsBuffer.Length; i++)
+            {
+                var item = itemsBuffer[i];
+                if ((item.fType & WinApi.IMFT_SEPARATOR) != 0)
+                {
+                    targetItems.Add(new ToolStripSeparator());
+                    addedCount++;
+                    continue;
+                }
+
+                var text = string.IsNullOrWhiteSpace(item.szString) ? "(IME)" : item.szString;
+                var menuItem = new ToolStripMenuItem(text)
+                {
+                    Checked = (item.fState & WinApi.IMFS_CHECKED) != 0,
+                    Enabled = (item.fState & WinApi.IMFS_DISABLED) == 0,
+                    Font = (item.fState & WinApi.IMFS_DEFAULT) != 0 ? new Font(normalFont, FontStyle.Bold) : normalFont
+                };
+
+                var commandId = item.wID;
+                var itemData = item.dwItemData;
+                menuItem.Click += (_, _) => InvokeNativeImeMenuCommand(commandId, itemData);
+
+                if ((item.fType & WinApi.IMFT_SUBMENU) != 0)
+                {
+                    AppendNativeImeMenuItems(menuItem.DropDownItems, inputContext, menuType, item);
+                }
+
+                targetItems.Add(menuItem);
+                addedCount++;
+            }
+
+            return addedCount;
+        }
+
+        private void InvokeNativeImeMenuCommand(uint commandId, uint itemData)
+        {
+            var imeTargetWindow = GetImeTargetWindowHandle();
+            if (imeTargetWindow == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var inputContext = WinApi.ImmGetContext(imeTargetWindow);
+            if (inputContext == IntPtr.Zero)
+            {
+                return;
+            }
+
+            try
+            {
+                WinApi.ImmNotifyIME(inputContext, WinApi.NI_IMEMENUSELECTED, commandId, itemData);
+            }
+            finally
+            {
+                WinApi.ImmReleaseContext(imeTargetWindow, inputContext);
+            }
+
+            UpdateInputMethodIndicators();
+        }
+
+        private void PopulateLanguageIndicatorContextMenu(ContextMenuStrip menu)
+        {
+            menu.Items.Clear();
+
+            var installedLanguages = InputLanguage.InstalledInputLanguages.Cast<InputLanguage>().ToList();
+            var currentLanguage = InputLanguage.CurrentInputLanguage;
+
+            foreach (var inputLanguage in installedLanguages)
+            {
+                var culture = inputLanguage.Culture;
+                var languageCode = GetLanguageIndicatorText(culture);
+                var menuText = $"{languageCode}  {culture.NativeName}";
+                var item = new ToolStripMenuItem(menuText, null, (_, _) =>
+                {
+                    InputLanguage.CurrentInputLanguage = inputLanguage;
+                    UpdateInputMethodIndicators();
+                })
+                {
+                    Checked = currentLanguage != null && inputLanguage.LayoutName.Equals(currentLanguage.LayoutName, StringComparison.OrdinalIgnoreCase)
+                };
+
+                menu.Items.Add(item);
+            }
+
+            if (menu.Items.Count > 0)
+            {
+                menu.Items.Add(new ToolStripSeparator());
+            }
+
+            menu.Items.Add("Windows IME Settings...", null, (_, _) => OpenWindowsImeSettings());
+
+            if (installedLanguages.Count == 0)
+            {
+                menu.Items.Add("No input languages available").Enabled = false;
+            }
+        }
+
+        private static void OpenWindowsImeSettings()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "ms-settings:regionlanguage",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "control.exe",
+                        Arguments = "/name Microsoft.Language",
+                        UseShellExecute = true
+                    });
+                }
+                catch
+                {
+                }
+            }
+        }
+
         private ContextMenuStrip BuildQuickLaunchItemContextMenu()
         {
             var menu = new ContextMenuStrip
@@ -3182,6 +3812,7 @@ namespace win9xplorer
                 TaskIconSize = taskIconSize,
                 LazyLoadProgramsSubmenu = lazyLoadProgramsSubmenu,
                 PlayVolumeFeedbackSound = playVolumeFeedbackSound,
+                UseClassicVolumePopup = useClassicVolumePopup,
                 StartMenuSubmenuOpenDelayMs = startMenuSubmenuOpenDelayMs,
                 AutoHideTaskbar = autoHideTaskbar,
                 StartOnWindowsStartup = startOnWindowsStartup,
@@ -3199,7 +3830,8 @@ namespace win9xplorer
                 QuickLaunchOrder = GetQuickLaunchOrderFromUi(),
                 ShowQuickLaunchToolbar = showQuickLaunchToolbar,
                 ShowAddressToolbar = showAddressToolbar,
-                AddressToolbarBeforeQuickLaunch = addressToolbarBeforeQuickLaunch
+                AddressToolbarBeforeQuickLaunch = addressToolbarBeforeQuickLaunch,
+                ShowSpotifyToolbar = showSpotifyToolbar
             });
         }
 
@@ -3321,6 +3953,10 @@ namespace win9xplorer
             Font = normalFont;
             lblClock.Font = normalFont;
             lblClock.ForeColor = taskbarFontColor;
+            languageIndicatorLabel.Font = normalFont;
+            languageIndicatorLabel.ForeColor = Color.White;
+            imeIndicatorLabel.Font = normalFont;
+            imeIndicatorLabel.ForeColor = Color.White;
             btnStart.Font = activeFont;
             btnStart.ForeColor = taskbarFontColor;
             btnStart.Height = TaskbarButtonHeight;
@@ -3328,6 +3964,8 @@ namespace win9xplorer
             taskWindowMenu.Font = normalFont;
             taskbarContextMenu.Font = normalFont;
             clockContextMenu.Font = normalFont;
+            languageIndicatorContextMenu.Font = normalFont;
+            imeIndicatorContextMenu.Font = normalFont;
             quickLaunchItemContextMenu.Font = normalFont;
             startMenu.Font = normalFont;
 
@@ -3347,6 +3985,13 @@ namespace win9xplorer
                     button.ForeColor = taskbarFontColor;
                 }
             }
+
+            btnSpotifyPrevious.Font = normalFont;
+            btnSpotifyPrevious.ForeColor = taskbarFontColor;
+            btnSpotifyPlayPause.Font = normalFont;
+            btnSpotifyPlayPause.ForeColor = taskbarFontColor;
+            btnSpotifyNext.Font = normalFont;
+            btnSpotifyNext.ForeColor = taskbarFontColor;
         }
 
         private void RefreshTaskbarColors()
@@ -3357,16 +4002,26 @@ namespace win9xplorer
             startHostPanel.BackColor = taskbarBaseColor;
             taskButtonsPanel.BackColor = taskbarBaseColor;
             quickLaunchPanel.BackColor = taskbarBaseColor;
+            spotifyToolbarPanel.BackColor = taskbarBaseColor;
             trayIconsPanel.BackColor = taskbarBaseColor;
             notificationAreaPanel.BackColor = taskbarBaseColor;
             lblClock.BackColor = taskbarBaseColor;
             customVolumeIcon.BackColor = taskbarBaseColor;
+            toolbarsSeparatorPanel.BackColor = taskbarBaseColor;
+            spotifyToolbarSeparatorPanel.BackColor = taskbarBaseColor;
+            taskButtonsSeparatorPanel.BackColor = taskbarBaseColor;
+            startToolbarSeparatorPanel.BackColor = taskbarBaseColor;
+            spotifyToolbarGripPanel.BackColor = taskbarBaseColor;
+            languageIndicatorLabel.BackColor = InputIndicatorBackColor;
+            imeIndicatorLabel.BackColor = InputIndicatorBackColor;
 
             win9xMenuRenderer = CreateWin9xMenuRenderer();
             ApplyWin9xContextMenuStyle(startMenu);
             ApplyWin9xContextMenuStyle(taskWindowMenu);
             ApplyWin9xContextMenuStyle(taskbarContextMenu);
             ApplyWin9xContextMenuStyle(clockContextMenu);
+            ApplyWin9xContextMenuStyle(languageIndicatorContextMenu);
+            ApplyWin9xContextMenuStyle(imeIndicatorContextMenu);
             ApplyWin9xContextMenuStyle(quickLaunchItemContextMenu);
 
             UpdateResizeUiState();
@@ -4340,6 +4995,25 @@ namespace win9xplorer
             clockContextMenu.Show(lblClock, e.Location);
         }
 
+        private void InputIndicatorLabel_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right)
+            {
+                return;
+            }
+
+            if (sender == languageIndicatorLabel)
+            {
+                languageIndicatorContextMenu.Show(languageIndicatorLabel, new Point(0, languageIndicatorLabel.Height));
+                return;
+            }
+
+            if (sender == imeIndicatorLabel)
+            {
+                imeIndicatorContextMenu.Show(imeIndicatorLabel, new Point(0, imeIndicatorLabel.Height));
+            }
+        }
+
         private void ShowTimeDetailsModal()
         {
             var clockBounds = lblClock.RectangleToScreen(lblClock.ClientRectangle);
@@ -4552,9 +5226,11 @@ namespace win9xplorer
             var toolbarCursor = taskbarLocked ? Cursors.Default : Cursors.SizeWE;
             quickLaunchGripPanel.Cursor = toolbarCursor;
             addressToolbarGripPanel.Cursor = toolbarCursor;
+            spotifyToolbarGripPanel.Cursor = toolbarCursor;
             resizeGripPanel.Invalidate();
             quickLaunchGripPanel.Invalidate();
             addressToolbarGripPanel.Invalidate();
+            spotifyToolbarGripPanel.Invalidate();
             runningProgramsGripPanel.Invalidate();
         }
 
@@ -4670,6 +5346,7 @@ namespace win9xplorer
                 taskIconSize,
                 lazyLoadProgramsSubmenu,
                 playVolumeFeedbackSound,
+                useClassicVolumePopup,
                 startMenuSubmenuOpenDelayMs,
                 autoHideTaskbar,
                 startOnWindowsStartup,
@@ -4734,6 +5411,7 @@ namespace win9xplorer
                 taskIconSize,
                 lazyLoadProgramsSubmenu,
                 playVolumeFeedbackSound,
+                useClassicVolumePopup,
                 startMenuSubmenuOpenDelayMs,
                 autoHideTaskbar,
                 startOnWindowsStartup,
@@ -4754,6 +5432,7 @@ namespace win9xplorer
             taskIconSize = state.TaskIconSize;
             lazyLoadProgramsSubmenu = state.LazyLoadProgramsSubmenu;
             playVolumeFeedbackSound = state.PlayVolumeFeedbackSound;
+            useClassicVolumePopup = state.UseClassicVolumePopup;
             startMenuSubmenuOpenDelayMs = state.StartMenuSubmenuOpenDelayMs;
             autoHideTaskbar = state.AutoHideTaskbar;
             startOnWindowsStartup = state.StartOnWindowsStartup;
@@ -4783,6 +5462,7 @@ namespace win9xplorer
             taskIconSize = dialog.TaskIconSize;
             lazyLoadProgramsSubmenu = dialog.LazyLoadProgramsSubmenu;
             playVolumeFeedbackSound = dialog.PlayVolumeFeedbackSound;
+            useClassicVolumePopup = dialog.UseClassicVolumePopup;
             startMenuSubmenuOpenDelayMs = dialog.StartMenuSubmenuOpenDelayMs;
             autoHideTaskbar = dialog.AutoHideTaskbar;
             startOnWindowsStartup = dialog.StartOnWindowsStartup;
@@ -4848,6 +5528,18 @@ namespace win9xplorer
             InvalidateProgramMenuCache();
 
             LoadQuickLaunchButtons();
+            var oldSpotifyPreviousImage = btnSpotifyPrevious.Image;
+            btnSpotifyPrevious.Image = ResizeIconImage(spotifyPreviousIconImage, GetSpotifyControlIconSize());
+            oldSpotifyPreviousImage?.Dispose();
+            var oldSpotifyPlayImage = btnSpotifyPlayPause.Image;
+            btnSpotifyPlayPause.Image = ResizeIconImage(spotifyPlayIconImage, GetSpotifyControlIconSize());
+            oldSpotifyPlayImage?.Dispose();
+            var oldSpotifyNextImage = btnSpotifyNext.Image;
+            btnSpotifyNext.Image = ResizeIconImage(spotifyNextIconImage, GetSpotifyControlIconSize());
+            oldSpotifyNextImage?.Dispose();
+            ApplyQuickLaunchButtonStyle(btnSpotifyPrevious);
+            ApplyQuickLaunchButtonStyle(btnSpotifyPlayPause);
+            ApplyQuickLaunchButtonStyle(btnSpotifyNext);
 
             foreach (var button in taskButtons.Values)
             {
@@ -5128,7 +5820,14 @@ namespace win9xplorer
                 trayIconsPanel.Controls.Add(customVolumeIcon);
             }
 
+            if (!trayIconsPanel.Controls.Contains(languageIndicatorLabel))
+            {
+                trayIconsPanel.Controls.Add(languageIndicatorLabel);
+            }
+
             trayIconsPanel.Controls.SetChildIndex(customVolumeIcon, trayIconsPanel.Controls.Count - 1);
+            trayIconsPanel.Controls.SetChildIndex(languageIndicatorLabel, trayIconsPanel.Controls.Count - 1);
+            UpdateInputMethodIndicators();
 
             ResizeTrayPanel();
             RefreshTrayHostPlacement();
@@ -5165,9 +5864,151 @@ namespace win9xplorer
             oldImage?.Dispose();
         }
 
+        private void UpdateInputMethodIndicators()
+        {
+            var imeTargetWindow = GetImeTargetWindowHandle();
+            var threadId = imeTargetWindow == IntPtr.Zero
+                ? 0u
+                : WinApi.GetWindowThreadProcessId(imeTargetWindow, out _);
+            var keyboardLayout = WinApi.GetKeyboardLayout(threadId);
+            var culture = GetCultureFromKeyboardLayout(keyboardLayout);
+
+            languageIndicatorLabel.Text = GetLanguageIndicatorText(culture);
+
+            var imeOpen = IsImeOpenForWindow(imeTargetWindow);
+            imeIndicatorLabel.Text = imeOpen ? "Im" : "Al";
+        }
+
+        private IntPtr GetImeTargetWindowHandle()
+        {
+            var foregroundWindow = WinApi.GetForegroundWindow();
+            if (foregroundWindow != IntPtr.Zero && foregroundWindow != Handle && !IsDesktopOrShellWindow(foregroundWindow))
+            {
+                return foregroundWindow;
+            }
+
+            if (interactionStateMachine.ActiveWindowHandle != IntPtr.Zero && interactionStateMachine.ActiveWindowHandle != Handle)
+            {
+                return interactionStateMachine.ActiveWindowHandle;
+            }
+
+            if (interactionStateMachine.ForegroundWindowBeforeTaskClick != IntPtr.Zero && interactionStateMachine.ForegroundWindowBeforeTaskClick != Handle)
+            {
+                return interactionStateMachine.ForegroundWindowBeforeTaskClick;
+            }
+
+            return foregroundWindow;
+        }
+
+        private static CultureInfo? GetCultureFromKeyboardLayout(IntPtr keyboardLayout)
+        {
+            var langId = (int)((long)keyboardLayout & 0xFFFF);
+            if (langId <= 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                return CultureInfo.GetCultureInfo(langId);
+            }
+            catch (CultureNotFoundException)
+            {
+                return null;
+            }
+        }
+
+        private static string GetLanguageIndicatorText(CultureInfo? culture)
+        {
+            if (culture is null)
+            {
+                return "--";
+            }
+
+            var code = culture.TwoLetterISOLanguageName;
+            if (string.IsNullOrWhiteSpace(code) || code.Equals("iv", StringComparison.OrdinalIgnoreCase))
+            {
+                return "--";
+            }
+
+            if (code.Length > 2)
+            {
+                code = code[..2];
+            }
+
+            return char.ToUpperInvariant(code[0]) + code[1..].ToLowerInvariant();
+        }
+
+        private static bool IsImeOpenForWindow(IntPtr windowHandle)
+        {
+            return TryGetImeStatus(windowHandle, out var imeOpen, out _, out _) && imeOpen;
+        }
+
+        private static bool TryGetImeStatus(IntPtr windowHandle, out bool imeOpen, out int conversionMode, out int sentenceMode)
+        {
+            imeOpen = false;
+            conversionMode = 0;
+            sentenceMode = 0;
+
+            if (windowHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var inputContext = WinApi.ImmGetContext(windowHandle);
+            if (inputContext == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                imeOpen = WinApi.ImmGetOpenStatus(inputContext);
+                var gotConversion = WinApi.ImmGetConversionStatus(inputContext, out conversionMode, out sentenceMode);
+                if (!gotConversion)
+                {
+                    conversionMode = 0;
+                    sentenceMode = 0;
+                }
+
+                return true;
+            }
+            finally
+            {
+                WinApi.ImmReleaseContext(windowHandle, inputContext);
+            }
+        }
+
+        private void ApplyImeStateToForegroundWindow(bool imeOpen, int conversionMode, int sentenceMode)
+        {
+            var foregroundWindow = WinApi.GetForegroundWindow();
+            if (foregroundWindow == IntPtr.Zero)
+            {
+                return;
+            }
+
+            var inputContext = WinApi.ImmGetContext(foregroundWindow);
+            if (inputContext == IntPtr.Zero)
+            {
+                return;
+            }
+
+            try
+            {
+                WinApi.ImmSetOpenStatus(inputContext, imeOpen);
+                WinApi.ImmSetConversionStatus(inputContext, conversionMode, sentenceMode);
+            }
+            finally
+            {
+                WinApi.ImmReleaseContext(foregroundWindow, inputContext);
+            }
+
+            UpdateInputMethodIndicators();
+        }
+
         private void ResizeTrayPanel()
         {
-            var count = trayIconControls.Count + 1;
+            var count = trayIconControls.Count + 2;
             trayIconsPanel.Width = Math.Clamp((count * 20) + 8, 32, 220);
             notificationAreaPanel.Width = trayIconsPanel.Width + lblClock.Width + notificationAreaPanel.Padding.Horizontal + 6;
         }
@@ -5227,7 +6068,15 @@ namespace win9xplorer
 
             if (e.Button == MouseButtons.Left && IsVolumeTrayIcon(icon))
             {
-                ShowVolumePopupNear(control);
+                if (useClassicVolumePopup)
+                {
+                    ShowClassicVolumePopup();
+                }
+                else
+                {
+                    OpenSystemVolumeMixer();
+                }
+
                 return;
             }
 
@@ -5256,7 +6105,13 @@ namespace win9xplorer
                 return;
             }
 
-            ShowVolumePopupNear(customVolumeIcon);
+            if (useClassicVolumePopup)
+            {
+                ShowClassicVolumePopup();
+                return;
+            }
+
+            OpenSystemVolumeMixer();
         }
 
         private void TrayIcon_MouseMove(object? sender, MouseEventArgs e)
@@ -5350,15 +6205,33 @@ namespace win9xplorer
             }
         }
 
-        private void ShowVolumePopupNear(Control trayIconControl)
+        private void OpenSystemVolumeMixer()
         {
-            if (IsDisposed || Disposing || volumePopup.IsDisposed)
+            try
             {
-                return;
-            }
+                if (volumePopup.Visible)
+                {
+                    volumePopup.Hide();
+                }
 
-            var iconBounds = trayIconControl.RectangleToScreen(trayIconControl.ClientRectangle);
-            var popupX = iconBounds.Left - (volumePopup.Width / 2) + (iconBounds.Width / 2);
+                var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "sndvol.exe",
+                    UseShellExecute = true
+                });
+
+                PositionProcessWindowNearTray(process);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to open system volume mixer: {ex.Message}");
+            }
+        }
+
+        private void ShowClassicVolumePopup()
+        {
+            var iconBounds = customVolumeIcon.RectangleToScreen(customVolumeIcon.ClientRectangle);
+            var popupX = iconBounds.Right - volumePopup.Width;
             var popupY = iconBounds.Top - volumePopup.Height - 4;
             var screenBounds = Screen.FromPoint(iconBounds.Location).WorkingArea;
 
@@ -5384,6 +6257,89 @@ namespace win9xplorer
             }
 
             volumePopup.ShowAt(new Point(popupX, popupY));
+        }
+
+        private static void PositionProcessWindowNearTray(Process? process)
+        {
+            var targetProcessId = process?.Id ?? 0;
+            var windowHandle = IntPtr.Zero;
+
+            for (var attempt = 0; attempt < 40; attempt++)
+            {
+                if (targetProcessId > 0)
+                {
+                    windowHandle = FindTopLevelWindowByProcessId((uint)targetProcessId);
+                }
+
+                if (windowHandle == IntPtr.Zero)
+                {
+                    var foregroundWindow = WinApi.GetForegroundWindow();
+                    if (foregroundWindow != IntPtr.Zero)
+                    {
+                        WinApi.GetWindowThreadProcessId(foregroundWindow, out var foregroundPid);
+                        if (foregroundPid != 0 && IsSndVolProcess(foregroundPid))
+                        {
+                            windowHandle = foregroundWindow;
+                        }
+                    }
+                }
+
+                if (windowHandle != IntPtr.Zero)
+                {
+                    break;
+                }
+
+                Thread.Sleep(50);
+            }
+
+            if (windowHandle == IntPtr.Zero || !WinApi.GetWindowRect(windowHandle, out var rect))
+            {
+                return;
+            }
+
+            var width = Math.Max(1, rect.Right - rect.Left);
+            var height = Math.Max(1, rect.Bottom - rect.Top);
+            var workArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 768);
+            var trayLift = Math.Max(12, (int)Math.Round(14 * (Form.ActiveForm?.DeviceDpi ?? 96) / 96.0));
+            var targetX = Math.Max(workArea.Left, workArea.Right - width - 8);
+            var targetY = Math.Max(workArea.Top, workArea.Bottom - height - trayLift);
+            WinApi.MoveWindow(windowHandle, targetX, targetY, width, height, true);
+        }
+
+        private static IntPtr FindTopLevelWindowByProcessId(uint processId)
+        {
+            var foundWindow = IntPtr.Zero;
+            WinApi.EnumWindows((hWnd, _) =>
+            {
+                if (!WinApi.IsWindowVisible(hWnd))
+                {
+                    return true;
+                }
+
+                WinApi.GetWindowThreadProcessId(hWnd, out var windowProcessId);
+                if (windowProcessId == processId)
+                {
+                    foundWindow = hWnd;
+                    return false;
+                }
+
+                return true;
+            }, IntPtr.Zero);
+
+            return foundWindow;
+        }
+
+        private static bool IsSndVolProcess(uint processId)
+        {
+            try
+            {
+                var process = Process.GetProcessById((int)processId);
+                return process.ProcessName.Equals("SndVol", StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void UpdateTrayIconPlacement(TrayNotifyIcon icon, Control control)
@@ -5546,11 +6502,34 @@ namespace win9xplorer
             explorer.Activate();
         }
 
+        private void UpdateSpotifyToolbarState()
+        {
+            var now = DateTime.UtcNow;
+            if ((now - spotifyStateLastCheckedUtc).TotalSeconds < 1)
+            {
+                return;
+            }
+
+            spotifyStateLastCheckedUtc = now;
+            var running = spotifyController.IsSpotifyRunning();
+            if (running == isSpotifyRunning)
+            {
+                return;
+            }
+
+            isSpotifyRunning = running;
+            btnSpotifyPrevious.Enabled = running;
+            btnSpotifyPlayPause.Enabled = running;
+            btnSpotifyNext.Enabled = running;
+        }
+
         private void RefreshTaskbar()
         {
             DetectFullscreenWindow();
             SetTaskbarBounds();
             lblClock.Text = DateTime.Now.ToString("h:mm tt");
+            UpdateInputMethodIndicators();
+            UpdateSpotifyToolbarState();
 
             var windows = GetVisibleWindows();
             var currentHandles = new HashSet<IntPtr>();
@@ -5615,6 +6594,9 @@ namespace win9xplorer
             button.Click -= TaskButton_Click;
             button.MouseDown -= TaskButton_MouseDown;
             button.MouseUp -= TaskButton_MouseUp;
+            button.MouseEnter -= TaskButton_MouseEnter;
+            button.MouseMove -= TaskButton_MouseMove;
+            button.MouseLeave -= TaskButton_MouseLeave;
 
             if (removeFromPanel && taskButtonsPanel.Controls.Contains(button))
             {
@@ -5687,20 +6669,27 @@ namespace win9xplorer
             button.Click += TaskButton_Click;
             button.MouseDown += TaskButton_MouseDown;
             button.MouseUp += TaskButton_MouseUp;
+            button.MouseEnter += TaskButton_MouseEnter;
+            button.MouseMove += TaskButton_MouseMove;
+            button.MouseLeave += TaskButton_MouseLeave;
             return button;
         }
 
         private void UpdateTaskButton(Button button, ApplicationWindow window)
         {
             var title = string.IsNullOrWhiteSpace(window.Title) ? "Untitled" : window.Title.Trim();
-            taskToolTip.SetToolTip(button, title);
+            button.AccessibleName = title;
+            taskToolTip.SetToolTip(button, string.Empty);
 
-            if (button.Image == null)
+            var taskButtonIconSize = GetScaledTaskButtonIconSize();
+            if (button.Image == null || button.Image.Width != taskButtonIconSize || button.Image.Height != taskButtonIconSize)
             {
-                var image = ConvertImageSourceToBitmap(window.Icon, taskIconSize);
+                var image = ConvertImageSourceToBitmap(window.Icon, taskButtonIconSize);
                 if (image != null)
                 {
+                    var oldImage = button.Image;
                     button.Image = AddIconMargin(image, 2, 1);
+                    oldImage?.Dispose();
                 }
             }
 
@@ -5733,7 +6722,7 @@ namespace win9xplorer
         private string TruncateTaskButtonText(Button button, string text, Font font)
         {
             var horizontalPadding = 12;
-            var imageSpace = button.Image != null ? taskIconSize + 8 : 0;
+            var imageSpace = button.Image != null ? button.Image.Width + 8 : 0;
             var maxWidth = Math.Max(24, button.ClientSize.Width - horizontalPadding - imageSpace);
 
             if (TextRenderer.MeasureText(text, font).Width <= maxWidth)
@@ -5783,13 +6772,29 @@ namespace win9xplorer
                 memoryStream.Position = 0;
 
                 using var image = new Bitmap(memoryStream);
-                return new Bitmap(image, new Size(iconSize, iconSize));
+                var scaled = new Bitmap(iconSize, iconSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using var graphics = Graphics.FromImage(scaled);
+                graphics.Clear(Color.Transparent);
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.SmoothingMode = SmoothingMode.HighQuality;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.CompositingQuality = CompositingQuality.HighQuality;
+                graphics.DrawImage(image, new Rectangle(0, 0, iconSize, iconSize), new Rectangle(0, 0, image.Width, image.Height), GraphicsUnit.Pixel);
+                return scaled;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Failed to convert task icon: {ex.Message}");
                 return null;
             }
+        }
+
+        private int GetScaledTaskButtonIconSize()
+        {
+            var scale = DeviceDpi <= 0 ? 1.0 : DeviceDpi / 96.0;
+            var scaled = (int)Math.Round(taskIconSize * scale);
+            var maxIconSize = Math.Max(16, TaskbarButtonHeight - 4);
+            return Math.Clamp(scaled, 16, maxIconSize);
         }
 
         private static Bitmap ResizeIconImage(Image source, int size)
@@ -5811,6 +6816,13 @@ namespace win9xplorer
         {
             var scale = DeviceDpi <= 0 ? 1.0 : DeviceDpi / 96.0;
             return Math.Clamp((int)Math.Round(16 * scale), 16, 18);
+        }
+
+        private int GetSpotifyControlIconSize()
+        {
+            var scale = DeviceDpi <= 0 ? 1.0 : DeviceDpi / 96.0;
+            var scaled = (int)Math.Round(18 * scale);
+            return Math.Clamp(scaled, 18, Math.Max(18, TaskbarButtonHeight - 4));
         }
 
         private void ResizeTaskButtons()
@@ -5927,6 +6939,49 @@ namespace win9xplorer
             taskWindowMenu.Show(button, e.Location);
         }
 
+        private void TaskButton_MouseEnter(object? sender, EventArgs e)
+        {
+            if (sender is not Button button)
+            {
+                return;
+            }
+
+            ShowTaskButtonToolTip(button);
+        }
+
+        private void TaskButton_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (sender is not Button button)
+            {
+                return;
+            }
+
+            ShowTaskButtonToolTip(button);
+        }
+
+        private void TaskButton_MouseLeave(object? sender, EventArgs e)
+        {
+            if (sender is Button button)
+            {
+                taskToolTip.Hide(button);
+                taskToolTip.Hide(this);
+            }
+        }
+
+        private void ShowTaskButtonToolTip(Button button)
+        {
+            var title = button.AccessibleName;
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return;
+            }
+
+            // Anchor tooltip to task button top-center in form coordinates.
+            var screenAnchor = button.PointToScreen(new Point(button.Width / 2, 0));
+            var formAnchor = PointToClient(new Point(screenAnchor.X - 90, screenAnchor.Y - 28));
+            taskToolTip.Show(title, this, formAnchor, 4000);
+        }
+
         private void SetTaskbarBounds()
         {
             var screenBounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1024, 768);
@@ -5944,7 +6999,7 @@ namespace win9xplorer
                     cursor.Y >= screenBounds.Bottom - totalHeight;
                 var keepVisible = nearBottomEdge || cursorOverExpandedArea ||
                     startMenu.Visible || taskWindowMenu.Visible || taskbarContextMenu.Visible ||
-                    clockContextMenu.Visible || quickLaunchItemContextMenu.Visible ||
+                    clockContextMenu.Visible || languageIndicatorContextMenu.Visible || imeIndicatorContextMenu.Visible || quickLaunchItemContextMenu.Visible ||
                     volumePopup.Visible || timeDetailsPopup.Visible || ContainsFocus;
 
                 taskbarY = keepVisible ? screenBounds.Bottom - totalHeight : screenBounds.Bottom - 2;

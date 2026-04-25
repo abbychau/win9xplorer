@@ -105,7 +105,7 @@ namespace win9xplorer
         }
 
         public void SetupToolbarIcons(ToolStripButton btnBack, ToolStripButton btnForward, ToolStripButton btnUp, ToolStripButton btnRefresh,
-            ToolStripButton btnViewLargeIcons, ToolStripButton btnViewSmallIcons, ToolStripButton btnViewList, ToolStripButton btnViewDetails)
+            ToolStripButton btnViewLargeIcons, ToolStripButton btnViewSmallIcons, ToolStripButton btnViewList, ToolStripButton btnViewDetails, int iconSize = 16)
         {
             Debug.WriteLine("=== Starting SetupToolbarIcons ===");
             
@@ -119,29 +119,29 @@ namespace win9xplorer
                 }
 
                 // Navigation icons using Windows XP style icons with multiple filename attempts
-                btnBack.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Back.png" }, "Back") 
+                btnBack.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Back.png" }, "Back", iconSize) 
                     ?? GetBestShellIcon(new int[] { 149, 126, 0 }, "Back", true);
                     
-                btnForward.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Forward.png" }, "Forward") 
+                btnForward.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Forward.png" }, "Forward", iconSize) 
                     ?? GetBestShellIcon(new int[] { 150, 127, 1 }, "Forward", true);
                     
-                btnUp.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Up.png" }, "Up") 
+                btnUp.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Up.png" }, "Up", iconSize) 
                     ?? GetBestShellIcon(new int[] { 146, 25, 5 }, "Up", true);
                     
-                btnRefresh.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Refresh.png", "IE Refresh.png" }, "Refresh") 
+                btnRefresh.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Refresh.png", "IE Refresh.png" }, "Refresh", iconSize) 
                     ?? GetBestShellIcon(new int[] { 238, 239, 147 }, "Refresh", true);
                 
                 // View As icons using Windows XP style icons with better mappings and alternatives
-                btnViewLargeIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Icon View.png", "Tile View.png" }, "LargeIcons") 
+                btnViewLargeIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Icon View.png", "Tile View.png" }, "LargeIcons", iconSize) 
                     ?? GetBestShellIcon(new int[] { 269, 3, 2 }, "LargeIcons", true);
                     
-                btnViewSmallIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Folder View - Classic.png", "Thumbnail View.png" }, "SmallIcons") 
+                btnViewSmallIcons.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Folder View - Classic.png", "Thumbnail View.png" }, "SmallIcons", iconSize) 
                     ?? GetBestShellIcon(new int[] { 268, 152, 2 }, "SmallIcons", true);
                     
-                btnViewList.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Checklist.png", "List View.png" }, "List") 
+                btnViewList.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Checklist.png", "List View.png" }, "List", iconSize) 
                     ?? GetBestShellIcon(new int[] { 267, 151, 1 }, "List", true);
                     
-                btnViewDetails.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Detail View.png", "Details.png" }, "Details") 
+                btnViewDetails.Image = LoadWindowsXPIconWithAlternatives(iconsFolder, new[] { "Detail View.png", "Details.png" }, "Details", iconSize) 
                     ?? GetBestShellIcon(new int[] { 266, 153, 4 }, "Details", true);
                 
                 Debug.WriteLine("Windows XP Icons setup completed");

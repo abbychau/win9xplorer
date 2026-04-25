@@ -52,6 +52,45 @@ namespace win9xplorer
         internal static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll")]
+        internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetKeyboardLayout(uint idThread);
+
+        [DllImport("imm32.dll")]
+        internal static extern IntPtr ImmGetContext(IntPtr hWnd);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmGetOpenStatus(IntPtr hIMC);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmGetConversionStatus(IntPtr hIMC, out int lpfdwConversion, out int lpfdwSentence);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmSetOpenStatus(IntPtr hIMC, bool fOpen);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmSetConversionStatus(IntPtr hIMC, int fdwConversion, int fdwSentence);
+
+        [DllImport("imm32.dll", CharSet = CharSet.Unicode)]
+        internal static extern uint ImmGetImeMenuItemsW(IntPtr hIMC, uint dwFlags, uint dwType, ref IMEMENUITEMINFOW lpImeParentMenu, [Out] IMEMENUITEMINFOW[]? lpImeMenu, uint dwSize);
+
+        [DllImport("imm32.dll", CharSet = CharSet.Unicode)]
+        internal static extern uint ImmGetImeMenuItemsW(IntPtr hIMC, uint dwFlags, uint dwType, IntPtr lpImeParentMenu, [Out] IMEMENUITEMINFOW[]? lpImeMenu, uint dwSize);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmNotifyIME(IntPtr hIMC, uint dwAction, uint dwIndex, uint dwValue);
+
+        [DllImport("imm32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
+
+        [DllImport("user32.dll")]
         internal static extern IntPtr GetShellWindow();
 
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -74,6 +113,14 @@ namespace win9xplorer
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool IsWindowVisible(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         internal static extern short GetAsyncKeyState(int vKey);
@@ -189,6 +236,26 @@ namespace win9xplorer
         internal const int WM_RBUTTONUP = 0x0205;
         internal const int WM_MBUTTONDOWN = 0x0207;
         internal const int WM_MBUTTONUP = 0x0208;
+        internal const int IME_CMODE_NATIVE = 0x0001;
+        internal const int IME_CMODE_KATAKANA = 0x0002;
+        internal const int IME_CMODE_FULLSHAPE = 0x0008;
+        internal const int IME_CMODE_ROMAN = 0x0010;
+        internal const uint NI_IMEMENUSELECTED = 0x0018;
+        internal const uint IGIMIF_RIGHTMENU = 0x0001;
+        internal const uint IGIMII_CMODE = 0x0001;
+        internal const uint IGIMII_SMODE = 0x0002;
+        internal const uint IGIMII_CONFIGURE = 0x0004;
+        internal const uint IGIMII_TOOLS = 0x0008;
+        internal const uint IGIMII_HELP = 0x0010;
+        internal const uint IGIMII_OTHER = 0x0020;
+        internal const uint IGIMII_INPUTTOOLS = 0x0040;
+        internal const uint IMFT_RADIOCHECK = 0x0001;
+        internal const uint IMFT_SEPARATOR = 0x0002;
+        internal const uint IMFT_SUBMENU = 0x0004;
+        internal const uint IMFS_GRAYED = 0x0003;
+        internal const uint IMFS_DISABLED = 0x0003;
+        internal const uint IMFS_CHECKED = 0x0008;
+        internal const uint IMFS_DEFAULT = 0x1000;
         internal const int VK_MENU = 0x12;
         internal const int VK_LWIN = 0x5B;
         internal const int VK_RWIN = 0x5C;
@@ -239,6 +306,21 @@ namespace win9xplorer
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
             public string szTypeName;
             public uint dwAttributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        internal struct IMEMENUITEMINFOW
+        {
+            public uint cbSize;
+            public uint fType;
+            public uint fState;
+            public uint wID;
+            public IntPtr hbmpChecked;
+            public IntPtr hbmpUnchecked;
+            public uint dwItemData;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+            public string szString;
+            public IntPtr hbmpItem;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -310,6 +392,7 @@ namespace win9xplorer
         internal delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         internal delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+        internal delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
         [StructLayout(LayoutKind.Sequential)]
         internal struct KBDLLHOOKSTRUCT

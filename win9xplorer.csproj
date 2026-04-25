@@ -53,6 +53,7 @@
     <EmbeddedResource Include="Windows XP Icons\Run.png" />
     <EmbeddedResource Include="Windows XP Icons\Start Menu Programs.png" />
     <EmbeddedResource Include="Windows XP Icons\Taskbar and Start Menu.png" />
+    <EmbeddedResource Include="Windows XP Icons\Volume.png" />
     <EmbeddedResource Include="Windows XP Icons\Thumbnail View.png" />
     <EmbeddedResource Include="Windows XP Icons\Tile View.png" />
     <EmbeddedResource Include="Windows XP Icons\Up.png" />

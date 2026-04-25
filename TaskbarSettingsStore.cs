@@ -12,6 +12,8 @@ namespace win9xplorer
 
         public bool PlayVolumeFeedbackSound { get; set; } = true;
 
+        public bool UseClassicVolumePopup { get; set; } = false;
+
         public int StartMenuSubmenuOpenDelayMs { get; set; } = 200;
 
         public bool AutoHideTaskbar { get; set; } = false;
@@ -47,6 +49,8 @@ namespace win9xplorer
         public bool ShowAddressToolbar { get; set; } = false;
 
         public bool AddressToolbarBeforeQuickLaunch { get; set; } = false;
+
+        public bool ShowSpotifyToolbar { get; set; } = true;
     }
 
     internal static class TaskbarSettingsStore

@@ -1,11 +1,14 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace win9xplorer
 {
     public partial class Form1 : Form
     {
         private const string InternalDragFormat = "win9xplorer/InternalDrag";
+        private const int LVM_FIRST = 0x1000;
+        private const int LVM_EDITLABELW = LVM_FIRST + 118;
         private readonly NavigationManager navigationManager;
         private readonly FileSystemManager fileSystemManager;
         private readonly IconManager iconManager;
@@ -25,10 +28,14 @@ namespace win9xplorer
         private TreeNode? currentTreeDropTargetNode;
         private Color currentTreeDropTargetOriginalBackColor = Color.Empty;
         private Color currentTreeDropTargetOriginalForeColor = Color.Empty;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         
         public Form1()
         {
             InitializeComponent();
+            ApplySharpToolbarIconScaling();
             
             // Initialize managers
             iconManager = new IconManager(imageListSmall, imageListLarge);
@@ -46,12 +53,36 @@ namespace win9xplorer
             SetupImageLists();
             SetupContextMenu();
             SetupDragAndDrop();
+            listView.KeyDown += ListView_KeyDown;
             SetupMenuBar();
             SetClassicWindowsStyle();
             SetupToolStripEvents();
             
             // Load settings from registry
             LoadAllSettings();
+        }
+
+        private void ApplySharpToolbarIconScaling()
+        {
+            var scaledIconSize = Math.Max(20, (int)Math.Round(20f * DeviceDpi / 96f));
+            toolStrip.ImageScalingSize = new Size(scaledIconSize, scaledIconSize);
+            addressStrip.ImageScalingSize = new Size(scaledIconSize, scaledIconSize);
+
+            foreach (ToolStripItem item in toolStrip.Items)
+            {
+                if (item is ToolStripButton button)
+                {
+                    button.ImageScaling = ToolStripItemImageScaling.None;
+                }
+            }
+
+            foreach (ToolStripItem item in addressStrip.Items)
+            {
+                if (item is ToolStripButton button)
+                {
+                    button.ImageScaling = ToolStripItemImageScaling.None;
+                }
+            }
         }
         
         private void SetupToolStripEvents()
@@ -274,7 +305,7 @@ namespace win9xplorer
             // Handle F2 to rename selected item in ListView
             if (keyData == Keys.F2)
             {
-                if (listView.Focused && listView.SelectedItems.Count == 1)
+                if (listView.ContainsFocus && listView.SelectedItems.Count == 1)
                 {
                     StartRenameSelectedItem();
                     return true;
@@ -1429,8 +1460,9 @@ namespace win9xplorer
 
         private void SetupToolbarIcons()
         {
+            var iconSize = GetToolbarIconSize();
             iconManager.SetupToolbarIcons(btnBack, btnForward, btnUp, btnRefresh, 
-                btnViewLargeIcons, btnViewSmallIcons, btnViewList, btnViewDetails);
+                btnViewLargeIcons, btnViewSmallIcons, btnViewList, btnViewDetails, iconSize);
             
             // Setup TreeView toggle button icon
             SetupTreeViewToggleIcon();
@@ -1448,17 +1480,34 @@ namespace win9xplorer
         private void SetupTreeViewToggleIcon()
         {
             // Create a simple folder tree icon for the toggle button
-            var folderIcon = iconManager.CreateViewIcon("folders", 16);
+            var folderIcon = iconManager.CreateViewIcon("folders", GetToolbarIconSize());
             if (folderIcon != null)
             {
                 btnToggleTreeView.Image = folderIcon;
             }
         }
 
+        private void ListView_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.F2)
+            {
+                return;
+            }
+
+            if (listView.SelectedItems.Count != 1)
+            {
+                return;
+            }
+
+            StartRenameSelectedItem();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+
         private void SetupBookmarkIcon()
         {
             // Create a star icon for the bookmark button
-            var starIcon = iconManager.CreateViewIcon("star", 16);
+            var starIcon = iconManager.CreateViewIcon("star", GetToolbarIconSize());
             if (starIcon != null)
             {
                 btnBookmark.Image = starIcon;
@@ -1471,11 +1520,16 @@ namespace win9xplorer
         private void SetupNavigateToFolderIcon()
         {
             // Create a navigate icon for the navigate to folder button
-            var navigateIcon = iconManager.CreateViewIcon("navigate", 16);
+            var navigateIcon = iconManager.CreateViewIcon("navigate", GetToolbarIconSize());
             if (navigateIcon != null)
             {
                 btnNavigateToFolder.Image = navigateIcon;
             }
+        }
+
+        private int GetToolbarIconSize()
+        {
+            return Math.Max(20, toolStrip.ImageScalingSize.Width);
         }
 
         private void UpdateBookmarkButtonState()
@@ -1966,8 +2020,33 @@ namespace win9xplorer
                     }
                 }
                 
-                // Start label editing for the selected item
-                selectedItem.BeginEdit();
+                // Ensure ListView/item focus is correct, then begin edit after current UI event completes
+                listView.LabelEdit = true;
+                listView.Focus();
+                selectedItem.Selected = true;
+                selectedItem.Focused = true;
+                selectedItem.EnsureVisible();
+
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (IsDisposed || listView.IsDisposed)
+                        {
+                            return;
+                        }
+
+                        if (selectedItem.ListView == listView)
+                        {
+                            selectedItem.BeginEdit();
+                            SendMessage(listView.Handle, LVM_EDITLABELW, (IntPtr)selectedItem.Index, IntPtr.Zero);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Failed to begin rename edit: {ex.Message}");
+                    }
+                }));
             }
         }
 
@@ -2287,6 +2366,7 @@ namespace win9xplorer
                     {
                         // Update the item's tag with the new path
                         item.Tag = newPath;
+                        UpdateTreeViewAfterRename(oldPath, newPath);
                         
                         // Refresh the current directory to update any changes
                         this.BeginInvoke(new Action(() => {
@@ -2341,6 +2421,49 @@ namespace win9xplorer
                 MessageBox.Show($"An error occurred during rename: {ex.Message}", 
                     "Rename Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 e.CancelEdit = true;
+            }
+        }
+
+        private void UpdateTreeViewAfterRename(string oldPath, string newPath)
+        {
+            if (string.IsNullOrWhiteSpace(oldPath) || string.IsNullOrWhiteSpace(newPath))
+            {
+                return;
+            }
+
+            foreach (TreeNode node in treeView.Nodes)
+            {
+                UpdateTreeNodePathRecursive(node, oldPath, newPath);
+            }
+        }
+
+        private static void UpdateTreeNodePathRecursive(TreeNode node, string oldPath, string newPath)
+        {
+            var nodePath = node.Tag?.ToString();
+            if (!string.IsNullOrWhiteSpace(nodePath))
+            {
+                if (string.Equals(nodePath, oldPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    node.Tag = newPath;
+                    var newName = Path.GetFileName(newPath);
+                    if (!string.IsNullOrWhiteSpace(newName))
+                    {
+                        node.Text = newName;
+                    }
+                }
+                else
+                {
+                    var oldPrefix = oldPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    if (nodePath.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        node.Tag = newPath + nodePath[oldPath.Length..];
+                    }
+                }
+            }
+
+            foreach (TreeNode child in node.Nodes)
+            {
+                UpdateTreeNodePathRecursive(child, oldPath, newPath);
             }
         }
 

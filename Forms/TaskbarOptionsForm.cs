@@ -25,6 +25,7 @@ namespace win9xplorer
         private readonly NumericUpDown bevelSizeInput;
         private readonly CheckBox lazyLoadProgramsCheckBox;
         private readonly CheckBox playVolumeFeedbackSoundCheckBox;
+        private readonly CheckBox useClassicVolumePopupCheckBox;
         private readonly CheckBox autoHideTaskbarCheckBox;
         private readonly CheckBox startOnWindowsStartupCheckBox;
         private readonly ComboBox themeProfileCombo;
@@ -41,6 +42,7 @@ namespace win9xplorer
         public int TaskIconSize => (int)taskIconSizeInput.Value;
         public bool LazyLoadProgramsSubmenu => lazyLoadProgramsCheckBox.Checked;
         public bool PlayVolumeFeedbackSound => playVolumeFeedbackSoundCheckBox.Checked;
+        public bool UseClassicVolumePopup => useClassicVolumePopupCheckBox.Checked;
         public int StartMenuSubmenuOpenDelayMs => (int)submenuOpenDelayInput.Value;
         public bool AutoHideTaskbar => autoHideTaskbarCheckBox.Checked;
         public bool StartOnWindowsStartup => startOnWindowsStartupCheckBox.Checked;
@@ -59,6 +61,7 @@ namespace win9xplorer
             int currentTaskIconSize,
             bool currentLazyLoadProgramsSubmenu,
             bool currentPlayVolumeFeedbackSound,
+            bool currentUseClassicVolumePopup,
             int currentStartMenuSubmenuOpenDelayMs,
             bool currentAutoHideTaskbar,
             bool currentStartOnWindowsStartup,
@@ -255,6 +258,12 @@ namespace win9xplorer
                 Checked = currentPlayVolumeFeedbackSound,
                 AutoSize = true
             };
+            useClassicVolumePopupCheckBox = new CheckBox
+            {
+                Text = "Use classic built-in volume popup (instead of sndvol.exe)",
+                Checked = currentUseClassicVolumePopup,
+                AutoSize = true
+            };
             var openQuickLaunchFolderButton = new Button
             {
                 Text = "Open Quick Launch Folder...",
@@ -262,6 +271,7 @@ namespace win9xplorer
             };
             openQuickLaunchFolderButton.Click += (_, _) => this.openQuickLaunchFolderAction();
             AddLabeledControl(trayLayout, "Volume feedback:", playVolumeFeedbackSoundCheckBox);
+            AddLabeledControl(trayLayout, "Volume UI:", useClassicVolumePopupCheckBox);
             AddLabeledControl(trayLayout, "Quick Launch:", openQuickLaunchFolderButton);
 
             var buttons = new FlowLayoutPanel
@@ -493,6 +503,7 @@ namespace win9xplorer
             taskIconSizeInput.Value = Math.Clamp(defaults.TaskIconSize, 16, 32);
             lazyLoadProgramsCheckBox.Checked = defaults.LazyLoadProgramsSubmenu;
             playVolumeFeedbackSoundCheckBox.Checked = defaults.PlayVolumeFeedbackSound;
+            useClassicVolumePopupCheckBox.Checked = defaults.UseClassicVolumePopup;
             submenuOpenDelayInput.Value = Math.Clamp(defaults.StartMenuSubmenuOpenDelayMs, 0, 1500);
             autoHideTaskbarCheckBox.Checked = defaults.AutoHideTaskbar;
             startOnWindowsStartupCheckBox.Checked = defaults.StartOnWindowsStartup;
@@ -601,6 +612,7 @@ namespace win9xplorer
             current.TaskIconSize = TaskIconSize;
             current.LazyLoadProgramsSubmenu = LazyLoadProgramsSubmenu;
             current.PlayVolumeFeedbackSound = PlayVolumeFeedbackSound;
+            current.UseClassicVolumePopup = UseClassicVolumePopup;
             current.StartMenuSubmenuOpenDelayMs = StartMenuSubmenuOpenDelayMs;
             current.AutoHideTaskbar = AutoHideTaskbar;
             current.StartOnWindowsStartup = StartOnWindowsStartup;
@@ -641,6 +653,7 @@ namespace win9xplorer
                 taskIconSizeInput.Value = Math.Clamp(imported.TaskIconSize, 16, 32);
                 lazyLoadProgramsCheckBox.Checked = imported.LazyLoadProgramsSubmenu;
                 playVolumeFeedbackSoundCheckBox.Checked = imported.PlayVolumeFeedbackSound;
+                useClassicVolumePopupCheckBox.Checked = imported.UseClassicVolumePopup;
                 submenuOpenDelayInput.Value = Math.Clamp(imported.StartMenuSubmenuOpenDelayMs, 0, 1500);
                 autoHideTaskbarCheckBox.Checked = imported.AutoHideTaskbar;
                 startOnWindowsStartupCheckBox.Checked = imported.StartOnWindowsStartup;
