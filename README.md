@@ -4,39 +4,39 @@ A faithful recreation of the classic Windows 9x experience for modern Windows, f
 
 ## Screenshots
 
-Single Bevel Taskbar
+Desktop and taskbar
 
-![](./screenshots/1.png)
-
-
-Tray icon and menus
-
-![](./screenshots/2.png)
+![](./docs/screenshot1.png)
 
 
-Customized Menu Style
+System tools submenu
 
-![](./screenshots/3.png)
+![](./docs/screenshot2-system-tools-submenu.png)
 
-Options
 
-![](./screenshots/4.png)
+Taskbar context menu
+
+![](./docs/screenshot3-taskbar-context-menu.png)
+
+Task Manager
+
+![](./docs/screenshot4-task-manager.png)
+
+Start menu search
+
+![](./docs/screenshot5-startmenu-search.png)
 
 File Explorer
 
-![](./screenshots/5.png)
+![](./docs/screenshot6-file-explorer.png)
 
-Windows Apps Menu for newer apps from Windows Store
+Spotify toolbar
 
-![](./screenshots/6.png)
+![](./docs/screenshot7-spotify-toolbar.png)
 
-Classic Context Menus in Start Menu
+Options window
 
-![](./screenshots/7.png)
-
-Double Bevel (Classic Style)
-
-![](./screenshots/8.png)
+![](./docs/screenshot8-option-window.png)
 
 
 ## Design Philosophy

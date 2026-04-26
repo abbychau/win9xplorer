@@ -355,6 +355,18 @@
       aspect-ratio: 281 / 377;
     }
 
+    .shot-explorer img {
+      aspect-ratio: 868 / 589;
+    }
+
+    .shot-spotify img {
+      aspect-ratio: 265 / 118;
+    }
+
+    .shot-options img {
+      aspect-ratio: 642 / 552;
+    }
+
     figcaption {
       padding: 11px 2px 2px;
       color: var(--muted);
@@ -394,12 +406,15 @@
     }
 
     .gallery .shot-desktop,
-    .gallery .shot-manager {
+    .gallery .shot-manager,
+    .gallery .shot-explorer {
       grid-column: span 3;
     }
 
     .gallery .shot-tools,
-    .gallery .shot-context {
+    .gallery .shot-context,
+    .gallery .shot-spotify,
+    .gallery .shot-options {
       grid-column: span 2;
     }
 
@@ -409,6 +424,11 @@
 
     .gallery .shot-search .shot-button {
       width: min(100%, 260px);
+      margin: 0 auto;
+    }
+
+    .gallery .shot-spotify .shot-button {
+      width: min(100%, 320px);
       margin: 0 auto;
     }
 
@@ -554,7 +574,10 @@
       .gallery .shot-manager,
       .gallery .shot-tools,
       .gallery .shot-context,
-      .gallery .shot-search {
+      .gallery .shot-search,
+      .gallery .shot-explorer,
+      .gallery .shot-spotify,
+      .gallery .shot-options {
         grid-column: span 1;
       }
     }
@@ -671,8 +694,10 @@
           <div class="stat"><strong>Spotify</strong><span>Spotify ToolBar in the taskbar.</span></div>
           <div class="stat"><strong>Task Manager</strong><span>Classic utility window for process and performance monitoring.</span></div>
           <div class="stat"><strong>Beveled design</strong><span>The real Windows 95/98 taste</span></div>
-
-          
+          <div class="stat"><strong>Address bar</strong><span>Navigate Web URLs and local paths from the Taskbar!</span></div>
+          <div class="stat"><strong>Shell tools</strong><span>System tools and common folders accessible from the Start menu.</span></div>
+          <div class="stat"><strong>IME Tray</strong><span>Language indicator in the system tray.</span></div>
+          <div class="stat"><strong>Customizable</strong><span>Options to toggle features, adjust visuals, and more.</span></div>
         </div>
         
       </div>
@@ -713,6 +738,24 @@
               <img src="screenshot5-startmenu-search.png" alt="Start menu search">
             </button>
             <figcaption>Search directly from the Start menu flow.</figcaption>
+          </figure>
+          <figure class="shot-explorer">
+            <button class="shot-button" type="button" data-lightbox-src="screenshot6-file-explorer.png" data-lightbox-title="File Explorer">
+              <img src="screenshot6-file-explorer.png" alt="File Explorer">
+            </button>
+            <figcaption>Classic file explorer window with native controls.</figcaption>
+          </figure>
+          <figure class="shot-spotify">
+            <button class="shot-button" type="button" data-lightbox-src="screenshot7-spotify-toolbar.png" data-lightbox-title="Spotify toolbar">
+              <img src="screenshot7-spotify-toolbar.png" alt="Spotify toolbar">
+            </button>
+            <figcaption>Spotify controls embedded in the taskbar.</figcaption>
+          </figure>
+          <figure class="shot-options">
+            <button class="shot-button" type="button" data-lightbox-src="screenshot8-option-window.png" data-lightbox-title="Options window">
+              <img src="screenshot8-option-window.png" alt="Options window">
+            </button>
+            <figcaption>Options window for tuning shell behavior.</figcaption>
           </figure>
         </div>
       </div>
