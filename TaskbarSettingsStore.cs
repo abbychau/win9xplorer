@@ -2,6 +2,15 @@ using System.Text.Json;
 
 namespace win9xplorer
 {
+    internal sealed class StartMenuRecentProgramSetting
+    {
+        public string DisplayName { get; set; } = string.Empty;
+
+        public string LaunchPath { get; set; } = string.Empty;
+
+        public bool IsShellApp { get; set; }
+    }
+
     internal sealed class TaskbarSettings
     {
         public int StartMenuIconSize { get; set; } = 20;
@@ -51,6 +60,12 @@ namespace win9xplorer
         public bool AddressToolbarBeforeQuickLaunch { get; set; } = false;
 
         public bool ShowSpotifyToolbar { get; set; } = true;
+
+        public List<string> AddressHistory { get; set; } = new();
+
+        public int StartMenuRecentProgramsMaxCount { get; set; } = 10;
+
+        public List<StartMenuRecentProgramSetting> StartMenuRecentPrograms { get; set; } = new();
     }
 
     internal static class TaskbarSettingsStore

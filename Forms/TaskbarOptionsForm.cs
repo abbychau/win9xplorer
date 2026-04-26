@@ -20,6 +20,7 @@ namespace win9xplorer
         private readonly NumericUpDown startMenuIconSizeInput;
         private readonly NumericUpDown taskIconSizeInput;
         private readonly NumericUpDown submenuOpenDelayInput;
+        private readonly NumericUpDown startMenuRecentProgramsCountInput;
         private readonly ComboBox fontNameCombo;
         private readonly NumericUpDown fontSizeInput;
         private readonly ComboBox buttonStyleCombo;
@@ -45,6 +46,7 @@ namespace win9xplorer
         public bool PlayVolumeFeedbackSound => playVolumeFeedbackSoundCheckBox.Checked;
         public bool UseClassicVolumePopup => useClassicVolumePopupCheckBox.Checked;
         public int StartMenuSubmenuOpenDelayMs => (int)submenuOpenDelayInput.Value;
+        public int StartMenuRecentProgramsMaxCount => (int)startMenuRecentProgramsCountInput.Value;
         public bool AutoHideTaskbar => autoHideTaskbarCheckBox.Checked;
         public bool StartOnWindowsStartup => startOnWindowsStartupCheckBox.Checked;
         public string TaskbarFontName => fontNameCombo.SelectedItem?.ToString() ?? "\u65B0\u7D30\u660E\u9AD4";
@@ -64,6 +66,7 @@ namespace win9xplorer
             bool currentPlayVolumeFeedbackSound,
             bool currentUseClassicVolumePopup,
             int currentStartMenuSubmenuOpenDelayMs,
+            int currentStartMenuRecentProgramsMaxCount,
             bool currentAutoHideTaskbar,
             bool currentStartOnWindowsStartup,
             string currentTaskbarButtonStyle,
@@ -242,6 +245,14 @@ namespace win9xplorer
                 Value = Math.Clamp(currentStartMenuSubmenuOpenDelayMs, 0, 1500),
                 Width = 90
             };
+            startMenuRecentProgramsCountInput = new NumericUpDown
+            {
+                Minimum = 1,
+                Maximum = 30,
+                Increment = 1,
+                Value = Math.Clamp(currentStartMenuRecentProgramsMaxCount, 1, 30),
+                Width = 90
+            };
             lazyLoadProgramsCheckBox = new CheckBox
             {
                 Text = "Lazy-load Programs submenu",
@@ -249,6 +260,7 @@ namespace win9xplorer
                 AutoSize = true
             };
             AddLabeledControl(startMenuLayout, "Submenu open delay (ms):", submenuOpenDelayInput);
+            AddLabeledControl(startMenuLayout, "Recent programs count:", startMenuRecentProgramsCountInput);
             AddLabeledControl(startMenuLayout, "Programs loading:", lazyLoadProgramsCheckBox);
             var openUserProgramsButton = new Button { Text = "Open User Programs Folder...", AutoSize = true };
             var openCommonProgramsButton = new Button { Text = "Open Common Programs Folder...", AutoSize = true };
@@ -568,6 +580,7 @@ namespace win9xplorer
             playVolumeFeedbackSoundCheckBox.Checked = defaults.PlayVolumeFeedbackSound;
             useClassicVolumePopupCheckBox.Checked = defaults.UseClassicVolumePopup;
             submenuOpenDelayInput.Value = Math.Clamp(defaults.StartMenuSubmenuOpenDelayMs, 0, 1500);
+            startMenuRecentProgramsCountInput.Value = Math.Clamp(defaults.StartMenuRecentProgramsMaxCount, 1, 30);
             autoHideTaskbarCheckBox.Checked = defaults.AutoHideTaskbar;
             startOnWindowsStartupCheckBox.Checked = defaults.StartOnWindowsStartup;
 
@@ -677,6 +690,7 @@ namespace win9xplorer
             current.PlayVolumeFeedbackSound = PlayVolumeFeedbackSound;
             current.UseClassicVolumePopup = UseClassicVolumePopup;
             current.StartMenuSubmenuOpenDelayMs = StartMenuSubmenuOpenDelayMs;
+            current.StartMenuRecentProgramsMaxCount = StartMenuRecentProgramsMaxCount;
             current.AutoHideTaskbar = AutoHideTaskbar;
             current.StartOnWindowsStartup = StartOnWindowsStartup;
             current.TaskbarButtonStyle = TaskbarButtonStyle;
@@ -718,6 +732,7 @@ namespace win9xplorer
                 playVolumeFeedbackSoundCheckBox.Checked = imported.PlayVolumeFeedbackSound;
                 useClassicVolumePopupCheckBox.Checked = imported.UseClassicVolumePopup;
                 submenuOpenDelayInput.Value = Math.Clamp(imported.StartMenuSubmenuOpenDelayMs, 0, 1500);
+                startMenuRecentProgramsCountInput.Value = Math.Clamp(imported.StartMenuRecentProgramsMaxCount, 1, 30);
                 autoHideTaskbarCheckBox.Checked = imported.AutoHideTaskbar;
                 startOnWindowsStartupCheckBox.Checked = imported.StartOnWindowsStartup;
                 buttonStyleCombo.SelectedItem = buttonStyleCombo.Items.Contains(imported.TaskbarButtonStyle) ? imported.TaskbarButtonStyle : "Win98";

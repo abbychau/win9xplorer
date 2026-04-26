@@ -142,6 +142,12 @@ namespace win9xplorer
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
 
+        [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+        internal static extern int SetWindowTheme(IntPtr hWnd, string? pszSubAppName, string? pszSubIdList);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
         [DllImport("user32.dll")]
         internal static extern IntPtr CreatePopupMenu();
 
@@ -184,9 +190,9 @@ namespace win9xplorer
 
         internal enum AppBarMsg
         {
-            New = 0x00000001,
+            New = 0x00000000,
+            Remove = 0x00000001,
             QueryPos = 0x00000002,
-            Remove = 0x00000002,
             SetPos = 0x00000003,
             GetPos = 0x00000004,
             GetAutoHideBar = 0x00000005,
@@ -229,6 +235,7 @@ namespace win9xplorer
         internal const int WM_SYSKEYDOWN = 0x0104;
         internal const int WM_SYSKEYUP = 0x0105;
         internal const int WM_MOUSEACTIVATE = 0x0021;
+        internal const int MA_NOACTIVATE = 0x0003;
         internal const int WM_ACTIVATEAPP = 0x001C;
         internal const int WM_USER = 0x0400;
         internal const int WM_LBUTTONDOWN = 0x0201;
@@ -260,6 +267,9 @@ namespace win9xplorer
         internal const int VK_MENU = 0x12;
         internal const int VK_LWIN = 0x5B;
         internal const int VK_RWIN = 0x5C;
+        internal const uint LLKHF_INJECTED = 0x00000010;
+        internal const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+        internal const uint KEYEVENTF_KEYUP = 0x0002;
         internal const int SW_RESTORE = 9;
         internal const int SW_MINIMIZE = 6;
 
