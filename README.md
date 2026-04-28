@@ -18,6 +18,10 @@ Taskbar context menu
 
 ![](./docs/screenshot3-taskbar-context-menu.png)
 
+Task button context menu
+
+![](./docs/screenshot8-context-menu-for-task-buttons.png)
+
 Task Manager
 
 ![](./docs/screenshot4-task-manager.png)

@@ -367,6 +367,10 @@
       aspect-ratio: 642 / 552;
     }
 
+    .shot-task-buttons img {
+      aspect-ratio: 1141 / 332;
+    }
+
     figcaption {
       padding: 11px 2px 2px;
       color: var(--muted);
@@ -407,7 +411,8 @@
 
     .gallery .shot-desktop,
     .gallery .shot-manager,
-    .gallery .shot-explorer {
+    .gallery .shot-explorer,
+    .gallery .shot-task-buttons {
       grid-column: span 3;
     }
 
@@ -577,7 +582,8 @@
       .gallery .shot-search,
       .gallery .shot-explorer,
       .gallery .shot-spotify,
-      .gallery .shot-options {
+      .gallery .shot-options,
+      .gallery .shot-task-buttons {
         grid-column: span 1;
       }
     }
@@ -726,6 +732,12 @@
               <img src="screenshot3-taskbar-context-menu.png" alt="Taskbar context menu">
             </button>
             <figcaption>Taskbar right-click menu for shell actions.</figcaption>
+          </figure>
+          <figure class="shot-task-buttons">
+            <button class="shot-button" type="button" data-lightbox-src="screenshot8-context-menu-for-task-buttons.png" data-lightbox-title="Task button context menu">
+              <img src="screenshot8-context-menu-for-task-buttons.png" alt="Task button context menu">
+            </button>
+            <figcaption>Per-window task button menu with classic window actions.</figcaption>
           </figure>
           <figure class="shot-manager">
             <button class="shot-button" type="button" data-lightbox-src="screenshot4-task-manager.png" data-lightbox-title="Task Manager">

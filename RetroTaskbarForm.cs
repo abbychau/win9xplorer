@@ -97,6 +97,7 @@ namespace win9xplorer
         private readonly Label languageIndicatorLabel;
         private readonly Label imeIndicatorLabel;
         private readonly System.Windows.Forms.Timer refreshTimer;
+        private readonly System.Windows.Forms.Timer trayResizeShrinkTimer;
         private ContextMenuStrip startMenu;
         private readonly ContextMenuStrip taskWindowMenu;
         private readonly ContextMenuStrip taskbarContextMenu;
@@ -128,6 +129,7 @@ namespace win9xplorer
         private readonly Dictionary<IntPtr, ApplicationWindow> windowsByHandle = new();
         private readonly HashSet<IntPtr> windowsMinimizedByShowDesktop = new();
         private readonly Dictionary<TrayNotifyIcon, PictureBox> trayIconControls = new();
+        private int trayIconSlotCount;
         private IntPtr contextMenuWindowHandle = IntPtr.Zero;
         private readonly TaskbarInteractionStateMachine interactionStateMachine;
         private readonly StartMenuController startMenuController;
@@ -150,8 +152,7 @@ namespace win9xplorer
         private readonly TimeDetailsForm timeDetailsPopup;
         private readonly PictureBox customVolumeIcon;
         private readonly TrayIconInteractionService trayIconInteractionService = new();
-        private FileSystemWatcher? quickLaunchWatcher;
-        private readonly System.Windows.Forms.Timer quickLaunchRefreshDebounceTimer;
+        private readonly QuickLaunchRefreshMonitor quickLaunchRefreshMonitor;
         private string? quickLaunchContextShortcutPath;
         private string? quickLaunchDragSourcePath;
         private Point quickLaunchDragStartPoint;
@@ -445,8 +446,10 @@ namespace win9xplorer
             instance = this;
             shellManager = new ShellManager();
             interactionStateMachine = new TaskbarInteractionStateMachine(TimeSpan.FromMilliseconds(250));
+            quickLaunchRefreshMonitor = new QuickLaunchRefreshMonitor(this);
+            quickLaunchRefreshMonitor.RefreshRequested += (_, _) => LoadQuickLaunchButtons();
 
-            var settings = TaskbarSettingsStore.Load();
+            var settings = TaskbarSettingsService.Load();
             startMenuIconSize = Math.Clamp(settings.StartMenuIconSize, 16, 32);
             taskIconSize = Math.Clamp(settings.TaskIconSize, 16, 32);
             lazyLoadProgramsSubmenu = settings.LazyLoadProgramsSubmenu;
@@ -461,49 +464,28 @@ namespace win9xplorer
             showSpotifyToolbar = settings.ShowSpotifyToolbar;
             addressToolbarBeforeQuickLaunch = settings.AddressToolbarBeforeQuickLaunch;
             addressToolbarHistory.Clear();
-            addressToolbarHistory.AddRange((settings.AddressHistory ?? new List<string>())
-                .Select(item => item?.Trim() ?? string.Empty)
-                .Where(item => !string.IsNullOrWhiteSpace(item))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(AddressHistoryMaxEntries)
-                .ToList());
+            addressToolbarHistory.AddRange(settings.AddressHistory);
             startMenuRecentPrograms.Clear();
-            startMenuRecentPrograms.AddRange((settings.StartMenuRecentPrograms ?? new List<StartMenuRecentProgramSetting>())
-                .Where(item => !string.IsNullOrWhiteSpace(item.LaunchPath))
+            startMenuRecentPrograms.AddRange(settings.StartMenuRecentPrograms
                 .Select(item => new ProgramSearchEntry(
                     string.IsNullOrWhiteSpace(item.DisplayName) ? item.LaunchPath : item.DisplayName,
                     item.LaunchPath.Trim(),
                     item.IsShellApp))
-                .DistinctBy(item => $"{item.IsShellApp}|{item.LaunchPath}", StringComparer.OrdinalIgnoreCase)
                 .Take(startMenuRecentProgramsMaxCount)
                 .ToList());
-            taskbarFontName = string.IsNullOrWhiteSpace(settings.TaskbarFontName) ? "\u65B0\u7D30\u660E\u9AD4" : settings.TaskbarFontName;
-            taskbarFontSize = Math.Clamp(settings.TaskbarFontSize, 7f, 16f);
-            taskbarFontColor = ParseColorOrDefault(settings.TaskbarFontColor, Color.Black);
+            taskbarFontName = settings.TaskbarFontName;
+            taskbarFontSize = settings.TaskbarFontSize;
+            taskbarFontColor = settings.TaskbarFontColor;
             taskbarLocked = settings.TaskbarLocked;
-            taskbarRows = Math.Clamp(settings.TaskbarRows, 1, 3);
-            taskbarBevelSize = Math.Clamp(settings.TaskbarBevelSize, 1, 4);
-            taskbarBaseColor = ParseColorOrDefault(settings.TaskbarBaseColor, Color.FromArgb(192, 192, 192));
-            taskbarLightColor = ParseColorOrDefault(settings.TaskbarLightColor, Color.FromArgb(255, 255, 255));
-            taskbarDarkColor = ParseColorOrDefault(settings.TaskbarDarkColor, Color.FromArgb(128, 128, 128));
-            selectedThemeProfileName = string.IsNullOrWhiteSpace(settings.ThemeProfileName) ? "Custom" : settings.ThemeProfileName;
+            taskbarRows = settings.TaskbarRows;
+            taskbarBevelSize = settings.TaskbarBevelSize;
+            taskbarBaseColor = settings.TaskbarBaseColor;
+            taskbarLightColor = settings.TaskbarLightColor;
+            taskbarDarkColor = settings.TaskbarDarkColor;
+            selectedThemeProfileName = settings.ThemeProfileName;
             if (Enum.TryParse<TaskbarButtonStyle>(settings.TaskbarButtonStyle, ignoreCase: true, out var parsedStyle))
             {
                 taskbarButtonStyle = parsedStyle;
-            }
-            else if (string.Equals(settings.TaskbarButtonStyle, "Win98 Thick", StringComparison.OrdinalIgnoreCase))
-            {
-                taskbarButtonStyle = TaskbarButtonStyle.Win98;
-                taskbarBevelSize = Math.Max(taskbarBevelSize, 2);
-            }
-            else if (string.Equals(settings.TaskbarButtonStyle, "Classic", StringComparison.OrdinalIgnoreCase))
-            {
-                taskbarButtonStyle = TaskbarButtonStyle.Modern; // Migrate Classic to Modern
-            }
-            else if (string.Equals(settings.TaskbarButtonStyle, "Flat", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(settings.TaskbarButtonStyle, "Borderless", StringComparison.OrdinalIgnoreCase))
-            {
-                taskbarButtonStyle = TaskbarButtonStyle.Win98;
             }
 
             ApplyThemeProfile(selectedThemeProfileName, preserveCustomizations: true);
@@ -896,9 +878,9 @@ namespace win9xplorer
             spotifyToolbarPanel.Controls.Add(spotifyNowPlayingLabel);
             spotifyToolbarPanel.Controls.Add(spotifyControlsPanel);
             isSpotifyRunning = spotifyController.IsSpotifyRunning();
-            btnSpotifyPrevious.Enabled = isSpotifyRunning;
-            btnSpotifyPlayPause.Enabled = isSpotifyRunning;
-            btnSpotifyNext.Enabled = isSpotifyRunning;
+            btnSpotifyPrevious.Enabled = true;
+            btnSpotifyPlayPause.Enabled = true;
+            btnSpotifyNext.Enabled = true;
 
             notificationAreaPanel = new Panel
             {
@@ -1072,11 +1054,12 @@ namespace win9xplorer
 
             refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
             refreshTimer.Tick += (_, _) => RefreshTaskbar();
-            quickLaunchRefreshDebounceTimer = new System.Windows.Forms.Timer { Interval = 300 };
-            quickLaunchRefreshDebounceTimer.Tick += (_, _) =>
+            trayResizeShrinkTimer = new System.Windows.Forms.Timer { Interval = 900 };
+            trayResizeShrinkTimer.Tick += (_, _) =>
             {
-                quickLaunchRefreshDebounceTimer.Stop();
-                LoadQuickLaunchButtons();
+                trayResizeShrinkTimer.Stop();
+                ResizeTrayPanel(allowShrink: true);
+                RefreshTrayHostPlacement();
             };
 
             Load += RetroTaskbarForm_Load;
@@ -1285,7 +1268,7 @@ namespace win9xplorer
             InstallKeyboardHook();
             InstallMouseHook();
             InitializeTrayService();
-            InitializeQuickLaunchWatcher();
+            quickLaunchRefreshMonitor.Start();
             RegisterAppBar(); // Register as AppBar to reserve desktop space
             SetTaskbarBounds();
             RefreshTaskbar();
@@ -1297,8 +1280,8 @@ namespace win9xplorer
             instance = null;
             refreshTimer.Stop();
             refreshTimer.Dispose();
-            quickLaunchRefreshDebounceTimer.Stop();
-            quickLaunchRefreshDebounceTimer.Dispose();
+            trayResizeShrinkTimer.Stop();
+            trayResizeShrinkTimer.Dispose();
             SaveTaskbarSettings();
             SystemEvents.DisplaySettingsChanged -= SystemEvents_DisplaySettingsChanged;
 
@@ -1370,7 +1353,7 @@ namespace win9xplorer
             UninstallKeyboardHook();
             UninstallMouseHook();
             UnregisterAppBar(); // Unregister AppBar before cleanup
-            DisposeQuickLaunchWatcher();
+            quickLaunchRefreshMonitor.Dispose();
             TeardownTrayService();
 
             TrySetExplorerTaskbarHidden(false);
@@ -4312,24 +4295,6 @@ namespace win9xplorer
             return menu;
         }
 
-        private void InitializeQuickLaunchWatcher()
-        {
-            var quickLaunchFolder = GetQuickLaunchFolderPath();
-            Directory.CreateDirectory(quickLaunchFolder);
-
-            quickLaunchWatcher = new FileSystemWatcher(quickLaunchFolder)
-            {
-                IncludeSubdirectories = false,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
-                EnableRaisingEvents = true
-            };
-
-            quickLaunchWatcher.Changed += QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Created += QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Deleted += QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Renamed += QuickLaunchWatcher_Renamed;
-        }
-
         private void ApplyWin9xContextMenuStyle(ContextMenuStrip menu)
         {
             if (taskbarButtonStyle == TaskbarButtonStyle.Modern)
@@ -4409,79 +4374,36 @@ namespace win9xplorer
             }
         }
 
-        private void DisposeQuickLaunchWatcher()
-        {
-            if (quickLaunchWatcher == null)
-            {
-                return;
-            }
-
-            quickLaunchWatcher.Changed -= QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Created -= QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Deleted -= QuickLaunchWatcher_Changed;
-            quickLaunchWatcher.Renamed -= QuickLaunchWatcher_Renamed;
-            quickLaunchWatcher.Dispose();
-            quickLaunchWatcher = null;
-        }
-
-        private void QuickLaunchWatcher_Changed(object sender, FileSystemEventArgs e)
-        {
-            TriggerQuickLaunchRefresh();
-        }
-
-        private void QuickLaunchWatcher_Renamed(object sender, RenamedEventArgs e)
-        {
-            TriggerQuickLaunchRefresh();
-        }
-
-        private void TriggerQuickLaunchRefresh()
-        {
-            if (IsDisposed)
-            {
-                return;
-            }
-
-            if (InvokeRequired)
-            {
-                BeginInvoke(new Action(TriggerQuickLaunchRefresh));
-                return;
-            }
-
-            quickLaunchRefreshDebounceTimer.Stop();
-            quickLaunchRefreshDebounceTimer.Start();
-        }
-
         private void SaveTaskbarSettings()
         {
-            TaskbarSettingsStore.Save(new TaskbarSettings
-            {
-                StartMenuIconSize = startMenuIconSize,
-                TaskIconSize = taskIconSize,
-                LazyLoadProgramsSubmenu = lazyLoadProgramsSubmenu,
-                PlayVolumeFeedbackSound = playVolumeFeedbackSound,
-                UseClassicVolumePopup = useClassicVolumePopup,
-                StartMenuSubmenuOpenDelayMs = startMenuSubmenuOpenDelayMs,
-                StartMenuRecentProgramsMaxCount = startMenuRecentProgramsMaxCount,
-                AutoHideTaskbar = autoHideTaskbar,
-                StartOnWindowsStartup = startOnWindowsStartup,
-                TaskbarButtonStyle = taskbarButtonStyle.ToString(),
-                TaskbarFontName = taskbarFontName,
-                TaskbarFontSize = taskbarFontSize,
-                TaskbarFontColor = ColorTranslator.ToHtml(taskbarFontColor),
-                TaskbarLocked = taskbarLocked,
-                TaskbarRows = taskbarRows,
-                TaskbarBaseColor = ColorTranslator.ToHtml(taskbarBaseColor),
-                TaskbarLightColor = ColorTranslator.ToHtml(taskbarLightColor),
-                TaskbarDarkColor = ColorTranslator.ToHtml(taskbarDarkColor),
-                TaskbarBevelSize = taskbarBevelSize,
-                ThemeProfileName = selectedThemeProfileName,
-                QuickLaunchOrder = GetQuickLaunchOrderFromUi(),
-                ShowQuickLaunchToolbar = showQuickLaunchToolbar,
-                ShowAddressToolbar = showAddressToolbar,
-                AddressToolbarBeforeQuickLaunch = addressToolbarBeforeQuickLaunch,
-                ShowSpotifyToolbar = showSpotifyToolbar,
-                AddressHistory = addressToolbarHistory.ToList(),
-                StartMenuRecentPrograms = startMenuRecentPrograms
+            TaskbarSettingsService.Save(new TaskbarRuntimeSettings(
+                StartMenuIconSize: startMenuIconSize,
+                TaskIconSize: taskIconSize,
+                LazyLoadProgramsSubmenu: lazyLoadProgramsSubmenu,
+                PlayVolumeFeedbackSound: playVolumeFeedbackSound,
+                UseClassicVolumePopup: useClassicVolumePopup,
+                StartMenuSubmenuOpenDelayMs: startMenuSubmenuOpenDelayMs,
+                StartMenuRecentProgramsMaxCount: startMenuRecentProgramsMaxCount,
+                AutoHideTaskbar: autoHideTaskbar,
+                StartOnWindowsStartup: startOnWindowsStartup,
+                TaskbarButtonStyle: taskbarButtonStyle.ToString(),
+                TaskbarFontName: taskbarFontName,
+                TaskbarFontSize: taskbarFontSize,
+                TaskbarFontColor: taskbarFontColor,
+                TaskbarLocked: taskbarLocked,
+                TaskbarRows: taskbarRows,
+                TaskbarBaseColor: taskbarBaseColor,
+                TaskbarLightColor: taskbarLightColor,
+                TaskbarDarkColor: taskbarDarkColor,
+                TaskbarBevelSize: taskbarBevelSize,
+                ThemeProfileName: selectedThemeProfileName,
+                QuickLaunchOrder: GetQuickLaunchOrderFromUi(),
+                ShowQuickLaunchToolbar: showQuickLaunchToolbar,
+                ShowAddressToolbar: showAddressToolbar,
+                AddressToolbarBeforeQuickLaunch: addressToolbarBeforeQuickLaunch,
+                ShowSpotifyToolbar: showSpotifyToolbar,
+                AddressHistory: addressToolbarHistory.ToList(),
+                StartMenuRecentPrograms: startMenuRecentPrograms
                     .Take(startMenuRecentProgramsMaxCount)
                     .Select(entry => new StartMenuRecentProgramSetting
                     {
@@ -4489,37 +4411,12 @@ namespace win9xplorer
                         LaunchPath = entry.LaunchPath,
                         IsShellApp = entry.IsShellApp
                     })
-                    .ToList()
-            });
+                    .ToList()));
         }
 
         private void ApplyWindowsStartupSetting(bool enabled)
         {
-            const string runPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-            const string runName = "win9xplorer";
-
-            try
-            {
-                using var key = Registry.CurrentUser.CreateSubKey(runPath);
-                if (key == null)
-                {
-                    return;
-                }
-
-                if (enabled)
-                {
-                    var exePath = Application.ExecutablePath;
-                    key.SetValue(runName, $"\"{exePath}\"");
-                }
-                else
-                {
-                    key.DeleteValue(runName, false);
-                }
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Failed to update startup registration: {ex.Message}");
-            }
+            WindowsStartupRegistrationService.Apply(enabled, Application.ExecutablePath);
         }
 
         private Font CreateTaskbarFont(FontStyle style)
@@ -4533,23 +4430,6 @@ namespace win9xplorer
                 taskbarFontName = "MS Sans Serif";
                 taskbarFontSize = 8.25f;
                 return new Font(taskbarFontName, taskbarFontSize, style, GraphicsUnit.Point);
-            }
-        }
-
-        private static Color ParseColorOrDefault(string? value, Color fallback)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return fallback;
-            }
-
-            try
-            {
-                return ColorTranslator.FromHtml(value);
-            }
-            catch
-            {
-                return fallback;
             }
         }
 
@@ -6622,7 +6502,7 @@ namespace win9xplorer
 
                 trayIconControls.Clear();
                 trayIconsPanel.Controls.Clear();
-                ResizeTrayPanel();
+                ResizeTrayPanel(allowShrink: true);
             }
             catch (Exception ex)
             {
@@ -6924,9 +6804,20 @@ namespace win9xplorer
             UpdateInputMethodIndicators();
         }
 
-        private void ResizeTrayPanel()
+        private void ResizeTrayPanel(bool allowShrink = false)
         {
-            var count = trayIconControls.Count + 3;
+            var desiredCount = trayIconControls.Count + 3;
+            if (desiredCount >= trayIconSlotCount || allowShrink)
+            {
+                trayIconSlotCount = desiredCount;
+                trayResizeShrinkTimer.Stop();
+            }
+            else if (!trayResizeShrinkTimer.Enabled)
+            {
+                trayResizeShrinkTimer.Start();
+            }
+
+            var count = Math.Max(desiredCount, trayIconSlotCount);
             var trayRows = GetTrayIconRows();
             var trayColumns = Math.Max(1, (int)Math.Ceiling(count / (double)trayRows));
             trayIconsPanel.FlowDirection = trayRows > 1 ? FlowDirection.TopDown : FlowDirection.LeftToRight;
@@ -7539,9 +7430,9 @@ namespace win9xplorer
             }
 
             isSpotifyRunning = running;
-            btnSpotifyPrevious.Enabled = running;
-            btnSpotifyPlayPause.Enabled = running;
-            btnSpotifyNext.Enabled = running;
+            btnSpotifyPrevious.Enabled = true;
+            btnSpotifyPlayPause.Enabled = true;
+            btnSpotifyNext.Enabled = true;
         }
 
         private void UpdateSpotifyToolbarLayout()
