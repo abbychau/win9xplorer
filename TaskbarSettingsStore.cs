@@ -61,7 +61,11 @@ namespace win9xplorer
 
         public bool ShowSpotifyToolbar { get; set; } = true;
 
+        public bool ShowVolumeToolbar { get; set; } = true;
+
         public List<string> AddressHistory { get; set; } = new();
+
+        public string LastAddressText { get; set; } = string.Empty;
 
         public int StartMenuRecentProgramsMaxCount { get; set; } = 10;
 

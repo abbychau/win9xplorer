@@ -10,6 +10,10 @@
     <ApplicationIcon>Windows 9x Icons\Desktop.ico</ApplicationIcon>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Remove="build_tmp\**\*.cs" />
     <Compile Update="Properties\Resources.Designer.cs">

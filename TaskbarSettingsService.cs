@@ -28,7 +28,9 @@ namespace win9xplorer
         bool ShowAddressToolbar,
         bool AddressToolbarBeforeQuickLaunch,
         bool ShowSpotifyToolbar,
+        bool ShowVolumeToolbar,
         List<string> AddressHistory,
+        string LastAddressText,
         List<StartMenuRecentProgramSetting> StartMenuRecentPrograms);
 
     internal static class TaskbarSettingsService
@@ -66,7 +68,9 @@ namespace win9xplorer
                 ShowAddressToolbar: settings.ShowAddressToolbar,
                 AddressToolbarBeforeQuickLaunch: settings.AddressToolbarBeforeQuickLaunch,
                 ShowSpotifyToolbar: settings.ShowSpotifyToolbar,
+                ShowVolumeToolbar: settings.ShowVolumeToolbar,
                 AddressHistory: NormalizeAddressHistory(settings.AddressHistory),
+                LastAddressText: settings.LastAddressText?.Trim() ?? string.Empty,
                 StartMenuRecentPrograms: NormalizeRecentPrograms(settings.StartMenuRecentPrograms, settings.StartMenuRecentProgramsMaxCount));
         }
 
@@ -99,7 +103,9 @@ namespace win9xplorer
                 ShowAddressToolbar = settings.ShowAddressToolbar,
                 AddressToolbarBeforeQuickLaunch = settings.AddressToolbarBeforeQuickLaunch,
                 ShowSpotifyToolbar = settings.ShowSpotifyToolbar,
+                ShowVolumeToolbar = settings.ShowVolumeToolbar,
                 AddressHistory = NormalizeAddressHistory(settings.AddressHistory),
+                LastAddressText = settings.LastAddressText?.Trim() ?? string.Empty,
                 StartMenuRecentPrograms = NormalizeRecentPrograms(settings.StartMenuRecentPrograms, settings.StartMenuRecentProgramsMaxCount)
             });
         }

@@ -65,6 +65,21 @@ namespace win9xplorer
             return TryGetFallbackRule(icon, out var rule) && rule.DoubleClickAction == TrayFallbackAction.OpenWindowsSecurityCenter;
         }
 
+        public bool ShouldSuppressHoverForwarding(TrayNotifyIcon icon)
+        {
+            return ContainsIgnoreCase(icon.Identifier, "spotify") ||
+                   ContainsIgnoreCase(icon.Path, "spotify") ||
+                   ContainsIgnoreCase(icon.Title, "spotify");
+        }
+
+        public bool HasStableIdentity(TrayNotifyIcon icon)
+        {
+            return icon.GUID != Guid.Empty ||
+                   !string.IsNullOrWhiteSpace(icon.Identifier) ||
+                   !string.IsNullOrWhiteSpace(icon.Path) ||
+                   !string.IsNullOrWhiteSpace(icon.Title);
+        }
+
         public string GetHoverMessage(TrayNotifyIcon icon)
         {
             if (TryGetFallbackRule(icon, out var rule) && !string.IsNullOrWhiteSpace(rule.TooltipOverride))

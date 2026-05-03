@@ -18,9 +18,60 @@ using WpfMouseButton = System.Windows.Input.MouseButton;
 
 namespace win9xplorer
 {
-    internal sealed class RetroTaskbarForm : Form
+    internal sealed partial class RetroTaskbarForm : Form
     {
+        private const int CLSCTX_ALL = 23;
+        private static readonly Guid CLSID_MMDeviceEnumerator = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
+        private static readonly Guid IID_IAudioEndpointVolume = new("5CDF2C82-841E-4546-9722-0CF74078229A");
+
         private static RetroTaskbarForm? instance;
+
+        private enum EDataFlow
+        {
+            eRender,
+            eCapture,
+            eAll,
+            EDataFlow_enum_count
+        }
+
+        private enum ERole
+        {
+            eConsole,
+            eMultimedia,
+            eCommunications,
+            ERole_enum_count
+        }
+
+        [ComImport]
+        [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDeviceEnumerator
+        {
+            int NotImpl1();
+            int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice device);
+        }
+
+        [ComImport]
+        [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IMMDevice
+        {
+            int Activate(ref Guid iid, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.Interface)] out object interfacePointer);
+        }
+
+        [ComImport]
+        [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IAudioEndpointVolume
+        {
+            int RegisterControlChangeNotify(IntPtr notify);
+            int UnregisterControlChangeNotify(IntPtr notify);
+            int GetChannelCount(out uint channelCount);
+            int SetMasterVolumeLevel(float levelDb, Guid eventContext);
+            int SetMasterVolumeLevelScalar(float level, Guid eventContext);
+            int GetMasterVolumeLevel(out float levelDb);
+            int GetMasterVolumeLevelScalar(out float level);
+        }
         private const int TaskbarRowHeight = 30;
         private const int TaskbarButtonVerticalPadding = 2;
         private const int TaskbarBottomPadding = 0;
@@ -38,6 +89,7 @@ namespace win9xplorer
         private const int MultiColumnThreshold = 22;
         private const int MaxSubmenuColumns = 3;
         private const int TrayIconCellSize = 20;
+        private const int TrayIconNewIconStabilityMs = 650;
         private const int AddressHistoryMaxEntries = 40;
         private const int DefaultStartMenuRecentProgramsMaxCount = 10;
         private const string StartMenuCommandTokenPrefix = "command::";
@@ -60,24 +112,29 @@ namespace win9xplorer
             "*.cpl"
         };
         private readonly ShellManager shellManager;
-        private readonly Panel resizeGripPanel;
+        private readonly Panel taskbarResizeHandlePanel;
         private readonly Panel contentPanel;
         private readonly Panel startHostPanel;
         private readonly Panel taskButtonsHostPanel;
         private readonly Panel addressRowHostPanel;
         private readonly Panel addressToolbarPanel;
+        private readonly Panel volumeToolbarPanel;
         private readonly Panel spotifyToolbarPanel;
         private readonly Panel spotifyControlsPanel;
         private readonly Panel startToolbarSeparatorPanel;
         private readonly Panel toolbarsSeparatorPanel;
         private readonly Panel spotifyToolbarSeparatorPanel;
         private readonly Panel taskButtonsSeparatorPanel;
+        private readonly Panel addressToolbarSeparatorPanel;
         private readonly Panel addressRowSeparatorPanel;
-        private readonly Panel quickLaunchGripPanel;
-        private readonly Panel addressToolbarGripPanel;
-        private readonly Panel addressRowGripPanel;
-        private readonly Panel spotifyToolbarGripPanel;
-        private readonly Panel runningProgramsGripPanel;
+        private readonly GripPanel quickLaunchGripPanel;
+        private readonly GripPanel addressToolbarGripPanel;
+        private readonly GripPanel addressRowGripPanel;
+        private readonly GripPanel volumeToolbarGripPanel;
+        private readonly GripPanel spotifyToolbarGripPanel;
+        private readonly GripPanel runningProgramsGripPanel;
+        private readonly List<ToolbarGripRelation> toolbarGripRelations = new();
+        private readonly List<ToolbarSeparatorRelation> toolbarSeparatorRelations = new();
         private readonly Panel addressInputHostPanel;
         private readonly Panel notificationAreaPanel;
         private readonly Button btnStart;
@@ -86,6 +143,7 @@ namespace win9xplorer
         private readonly Button btnSpotifyNext;
         private readonly Label spotifyNowPlayingLabel;
         private readonly ComboBox addressToolbarComboBox;
+        private readonly TrackBar volumeToolbarTrackBar;
         private IntPtr appBarHandle = IntPtr.Zero;
         private bool isAppBarRegistered = false;
         private bool isFullscreenActive = false;
@@ -98,6 +156,7 @@ namespace win9xplorer
         private readonly Label imeIndicatorLabel;
         private readonly System.Windows.Forms.Timer refreshTimer;
         private readonly System.Windows.Forms.Timer trayResizeShrinkTimer;
+        private readonly System.Windows.Forms.Timer trayIconStabilityTimer;
         private ContextMenuStrip startMenu;
         private readonly ContextMenuStrip taskWindowMenu;
         private readonly ContextMenuStrip taskbarContextMenu;
@@ -129,7 +188,9 @@ namespace win9xplorer
         private readonly Dictionary<IntPtr, ApplicationWindow> windowsByHandle = new();
         private readonly HashSet<IntPtr> windowsMinimizedByShowDesktop = new();
         private readonly Dictionary<TrayNotifyIcon, PictureBox> trayIconControls = new();
+        private readonly Dictionary<TrayNotifyIcon, DateTime> trayIconFirstSeenUtc = new();
         private int trayIconSlotCount;
+        private bool trayInitialSyncComplete;
         private IntPtr contextMenuWindowHandle = IntPtr.Zero;
         private readonly TaskbarInteractionStateMachine interactionStateMachine;
         private readonly StartMenuController startMenuController;
@@ -173,12 +234,16 @@ namespace win9xplorer
         private bool showQuickLaunchToolbar = true;
         private bool showAddressToolbar;
         private bool showSpotifyToolbar = true;
+        private bool showVolumeToolbar = true;
         private bool isSpotifyRunning;
         private DateTime spotifyStateLastCheckedUtc = DateTime.MinValue;
         private bool addressToolbarBeforeQuickLaunch;
+        private string lastAddressToolbarText = string.Empty;
         private bool isToolbarReorderDragging;
         private bool toolbarOrderChangedDuringDrag;
         private string? draggingToolbarId;
+        private bool suppressVolumeToolbarEvents;
+        private bool isVolumeToolbarDragging;
         private TaskbarButtonStyle taskbarButtonStyle = TaskbarButtonStyle.Modern;
         private int taskbarBevelSize = 1;
         private Color taskbarBaseColor = Color.FromArgb(192, 192, 192);
@@ -199,6 +264,12 @@ namespace win9xplorer
         private readonly List<ProgramSearchEntry> programSearchEntriesCache = new();
         private readonly List<ProgramSearchEntry> startMenuRecentPrograms = new();
         private readonly Dictionary<ToolStripMenuItem, EventHandler> menuDropDownOpeningHandlers = new();
+        private readonly ToolbarComponents quickLaunchToolbar;
+        private readonly ToolbarComponents addressToolbar;
+        private readonly ToolbarComponents volumeToolbar;
+        private readonly ToolbarComponents spotifyToolbar;
+        private readonly IReadOnlyDictionary<ToolbarId, ToolbarComponents> toolbarsById;
+        private ToolbarHostApplier? toolbarHostApplier;
         private string clockLineDate = string.Empty;
         private string clockLineWeekday = string.Empty;
         private string clockLineTime = string.Empty;
@@ -238,6 +309,135 @@ namespace win9xplorer
             Win98
         }
 
+        private sealed class GripPanel : Panel
+        {
+            private readonly RetroTaskbarForm owner;
+            private readonly Cursor toolbarCursor;
+            private readonly bool enableToolbarReorder;
+            private readonly string? dragTag;
+
+            public GripPanel(
+                RetroTaskbarForm owner,
+                Color backColor,
+                Cursor cursor,
+                bool visible = false,
+                bool enabled = true,
+                bool enableToolbarReorder = false,
+                string? dragTag = null,
+                bool forwardChildResizeMouse = false)
+            {
+                this.owner = owner;
+                toolbarCursor = cursor;
+                this.enableToolbarReorder = enableToolbarReorder;
+                this.dragTag = dragTag;
+                Dock = DockStyle.Left;
+                Width = 8;
+                Margin = Padding.Empty;
+                Padding = Padding.Empty;
+                BackColor = backColor;
+                Cursor = cursor;
+                Visible = visible;
+                Enabled = enabled;
+                Tag = dragTag;
+                if (forwardChildResizeMouse)
+                {
+                    MouseDown += owner.ChildTaskbarResize_MouseDown;
+                    MouseMove += owner.ChildTaskbarResize_MouseMove;
+                    MouseUp += owner.ChildTaskbarResize_MouseUp;
+                }
+            }
+
+            public void ApplyTheme(Color backColor)
+            {
+                BackColor = backColor;
+            }
+
+            public void SetToolbarVisible(bool visible)
+            {
+                Visible = visible;
+            }
+
+            public void ApplyCursor(bool locked)
+            {
+                Cursor = locked ? Cursors.Default : toolbarCursor;
+            }
+
+            public void RefreshGrip()
+            {
+                Invalidate();
+            }
+
+            public void ApplyLockState(bool locked)
+            {
+                ApplyCursor(locked);
+                RefreshGrip();
+            }
+
+            public static void ApplyLockState(bool locked, params GripPanel[] grips)
+            {
+                foreach (var grip in grips)
+                {
+                    grip.ApplyLockState(locked);
+                }
+            }
+
+            public static void ApplyTheme(Color backColor, params GripPanel[] grips)
+            {
+                foreach (var grip in grips)
+                {
+                    grip.ApplyTheme(backColor);
+                }
+            }
+
+            public static void SetToolbarVisible(bool visible, params GripPanel[] grips)
+            {
+                foreach (var grip in grips)
+                {
+                    grip.SetToolbarVisible(visible);
+                }
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.Clear(owner.taskbarBaseColor);
+                var left = 2;
+                var top = 2;
+                var bottom = Math.Max(top, Height - 5);
+                owner.DrawToolbarGrip(e.Graphics, left, top, bottom);
+
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (enableToolbarReorder)
+                {
+                    owner.ToolbarGripPanel_MouseDown(this, e);
+                }
+
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseMove(MouseEventArgs e)
+            {
+                if (enableToolbarReorder)
+                {
+                    owner.ToolbarGripPanel_MouseMove(this, e);
+                }
+
+                base.OnMouseMove(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                if (enableToolbarReorder)
+                {
+                    owner.ToolbarGripPanel_MouseUp(this, e);
+                }
+
+                base.OnMouseUp(e);
+            }
+        }
+
         private sealed record OptionsState(
             int StartMenuIconSize,
             int TaskIconSize,
@@ -257,6 +457,40 @@ namespace win9xplorer
             Color LightColor,
             Color DarkColor,
             string ThemeProfileName);
+
+        private sealed record ToolbarLayoutState(
+            bool ShowQuickLaunch,
+            bool ShowAddressInLeftRail,
+            bool UseDedicatedAddressRow,
+            bool ShowVolume,
+            bool ShowSpotify);
+
+        private sealed record ToolbarGripRelation(
+            GripPanel Grip,
+            Func<ToolbarLayoutState, bool> IsVisible);
+
+        private sealed record ToolbarSeparatorRelation(
+            Panel Separator,
+            Func<ToolbarLayoutState, bool> IsVisible);
+
+        private GripPanel CreateGripPanel(bool visible = false, bool enabled = true, Cursor? cursor = null, string? dragTag = null, bool enableToolbarReorder = false, bool forwardChildResizeMouse = false)
+        {
+            return new GripPanel(this, taskbarBaseColor, cursor ?? Cursors.SizeWE, visible, enabled, enableToolbarReorder, dragTag, forwardChildResizeMouse);
+        }
+
+        private Panel CreateSeparatorPanel()
+        {
+            var separatorPanel = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = 4,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                BackColor = taskbarBaseColor
+            };
+            separatorPanel.Paint += ToolbarSeparatorPanel_Paint;
+            return separatorPanel;
+        }
 
         private sealed class Win9xColorTable : ProfessionalColorTable
         {
@@ -462,7 +696,9 @@ namespace win9xplorer
             showQuickLaunchToolbar = settings.ShowQuickLaunchToolbar;
             showAddressToolbar = settings.ShowAddressToolbar;
             showSpotifyToolbar = settings.ShowSpotifyToolbar;
+            showVolumeToolbar = settings.ShowVolumeToolbar;
             addressToolbarBeforeQuickLaunch = settings.AddressToolbarBeforeQuickLaunch;
+            lastAddressToolbarText = settings.LastAddressText?.Trim() ?? string.Empty;
             addressToolbarHistory.Clear();
             addressToolbarHistory.AddRange(settings.AddressHistory);
             startMenuRecentPrograms.Clear();
@@ -515,7 +751,7 @@ namespace win9xplorer
             spotifyPlayIconImage = LoadPlayerControlIconAsset("play.png", SystemIcons.Application.ToBitmap());
             spotifyNextIconImage = LoadPlayerControlIconAsset("next.png", SystemIcons.Application.ToBitmap());
 
-            resizeGripPanel = new Panel
+            taskbarResizeHandlePanel = new Panel
             {
                 Dock = DockStyle.Top,
                 Height = ResizeGripHeight,
@@ -523,7 +759,7 @@ namespace win9xplorer
                 Cursor = Cursors.SizeNS,
                 Visible = true
             };
-            resizeGripPanel.Paint += ResizeGripPanel_Paint;
+            taskbarResizeHandlePanel.Paint += ResizeGripPanel_Paint;
 
             contentPanel = new Panel
             {
@@ -541,45 +777,11 @@ namespace win9xplorer
                 Padding = new Padding(1, 0, TaskbarButtonGap, 0)
             };
 
-            startToolbarSeparatorPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 4,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor
-            };
-            startToolbarSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
-
-            toolbarsSeparatorPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 4,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor
-            };
-            toolbarsSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
-
-            spotifyToolbarSeparatorPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 4,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor
-            };
-            spotifyToolbarSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
-
-            taskButtonsSeparatorPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 4,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor
-            };
-            taskButtonsSeparatorPanel.Paint += ToolbarSeparatorPanel_Paint;
+            startToolbarSeparatorPanel = CreateSeparatorPanel();
+            toolbarsSeparatorPanel = CreateSeparatorPanel();
+            spotifyToolbarSeparatorPanel = CreateSeparatorPanel();
+            taskButtonsSeparatorPanel = CreateSeparatorPanel();
+            addressToolbarSeparatorPanel = CreateSeparatorPanel();
 
             addressRowSeparatorPanel = new Panel
             {
@@ -591,6 +793,7 @@ namespace win9xplorer
                 Visible = false
             };
             addressRowSeparatorPanel.Paint += AddressRowSeparatorPanel_Paint;
+
 
             btnStart = new Button
             {
@@ -668,21 +871,7 @@ namespace win9xplorer
                 BorderStyle = BorderStyle.None
             };
 
-            quickLaunchGripPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 8,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor,
-                Cursor = Cursors.SizeWE,
-                Visible = false
-            };
-            quickLaunchGripPanel.Paint += ToolbarGripPanel_Paint;
-            quickLaunchGripPanel.MouseDown += ToolbarGripPanel_MouseDown;
-            quickLaunchGripPanel.MouseMove += ToolbarGripPanel_MouseMove;
-            quickLaunchGripPanel.MouseUp += ToolbarGripPanel_MouseUp;
-            quickLaunchGripPanel.Tag = "QuickLaunch";
+            quickLaunchGripPanel = CreateGripPanel(enableToolbarReorder: true, dragTag: "QuickLaunch", forwardChildResizeMouse: true);
 
             addressRowHostPanel = new Panel
             {
@@ -700,43 +889,31 @@ namespace win9xplorer
                 Dock = DockStyle.Left,
                 Width = 260,
                 Margin = Padding.Empty,
-                Padding = new Padding(2, 2, 2, 1),
+                Padding = new Padding(2, 1, 2, 2),
                 BackColor = taskbarBaseColor,
                 BorderStyle = BorderStyle.None,
                 Visible = showAddressToolbar
             };
 
-            addressToolbarGripPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 8,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor,
-                Cursor = Cursors.SizeWE,
-                Visible = false
-            };
-            addressToolbarGripPanel.Paint += ToolbarGripPanel_Paint;
-            addressToolbarGripPanel.MouseDown += ToolbarGripPanel_MouseDown;
-            addressToolbarGripPanel.MouseMove += ToolbarGripPanel_MouseMove;
-            addressToolbarGripPanel.MouseUp += ToolbarGripPanel_MouseUp;
-            addressToolbarGripPanel.Tag = "Address";
 
-            addressRowGripPanel = new Panel
+            volumeToolbarPanel = new Panel
             {
                 Dock = DockStyle.Left,
-                Width = 8,
+                Width = 140,
                 Margin = Padding.Empty,
-                Padding = Padding.Empty,
+                Padding = new Padding(6, 3, 6, 2),
                 BackColor = taskbarBaseColor,
-                Cursor = Cursors.SizeWE,
-                Visible = false
+                BorderStyle = BorderStyle.None,
+                Visible = true
             };
-            addressRowGripPanel.Paint += ToolbarGripPanel_Paint;
+
+            volumeToolbarGripPanel = CreateGripPanel(forwardChildResizeMouse: true);
+            addressToolbarGripPanel = CreateGripPanel(enableToolbarReorder: true, dragTag: "Address");
+            addressRowGripPanel = CreateGripPanel();
 
             addressInputHostPanel = new Panel
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Fill,
                 Margin = Padding.Empty,
                 Padding = new Padding(2, 2, 2, 2),
                 BackColor = Color.White,
@@ -764,23 +941,51 @@ namespace win9xplorer
             addressToolbarComboBox.Anchor = AnchorStyles.Left | AnchorStyles.Right;
             addressToolbarComboBox.Height = Math.Max(18, TextRenderer.MeasureText("My Computer", normalFont).Height + 8);
 
+            volumeToolbarTrackBar = new TrackBar
+            {
+                Dock = DockStyle.Fill,
+                Minimum = 0,
+                Maximum = 100,
+                TickStyle = TickStyle.None,
+                SmallChange = 2,
+                LargeChange = 10,
+                Margin = Padding.Empty
+            };
+            volumeToolbarTrackBar.ValueChanged += VolumeToolbarTrackBar_ValueChanged;
+            volumeToolbarTrackBar.MouseDown += VolumeToolbarTrackBar_MouseDown;
+            volumeToolbarTrackBar.MouseUp += VolumeToolbarTrackBar_MouseUp;
+
             addressInputHostPanel.Resize += (_, _) => CenterAddressTextBoxVertically();
             addressInputHostPanel.Controls.Add(addressToolbarComboBox);
             addressInputHostPanel.Height = GetAddressInputHostHeight();
             RefreshAddressToolbarHistoryItems();
+            if (!string.IsNullOrWhiteSpace(lastAddressToolbarText))
+            {
+                addressToolbarComboBox.Text = lastAddressToolbarText;
+                addressToolbarComboBox.SelectionStart = addressToolbarComboBox.Text.Length;
+            }
             CenterAddressTextBoxVertically();
+            volumeToolbarPanel.Controls.Add(volumeToolbarTrackBar);
+            SyncVolumeToolbarFromSystem();
 
             addressToolbarPanel.Controls.Add(addressInputHostPanel);
             addressRowHostPanel.Controls.Add(addressRowSeparatorPanel);
-            addressRowHostPanel.Controls.Add(addressToolbarPanel);
-            addressRowHostPanel.Controls.Add(addressRowGripPanel);
 
+
+            addressRowHostPanel.Controls.Add(volumeToolbarGripPanel);
+            addressRowHostPanel.Controls.Add(volumeToolbarPanel);
+            
+            addressRowHostPanel.Controls.Add(addressToolbarSeparatorPanel);
+            addressRowHostPanel.Controls.Add(addressToolbarPanel);
+
+            addressRowHostPanel.Controls.Add(addressRowGripPanel);
+            
             spotifyToolbarPanel = new Panel
             {
                 Dock = DockStyle.Left,
                 Width = (QuickLaunchButtonSize * 3) + (TaskbarButtonGap * 2) + 4,
                 Margin = Padding.Empty,
-                Padding = new Padding(2, 2, 2, 1),
+                Padding = new Padding(2, 0, 2, 3),
                 BackColor = taskbarBaseColor,
                 BorderStyle = BorderStyle.None,
                 Visible = showSpotifyToolbar
@@ -795,17 +1000,18 @@ namespace win9xplorer
                 BackColor = taskbarBaseColor
             };
 
-            spotifyToolbarGripPanel = new Panel
+            spotifyToolbarGripPanel = CreateGripPanel(forwardChildResizeMouse: true);
+            quickLaunchToolbar = new ToolbarComponents(quickLaunchPanel, quickLaunchGripPanel);
+            addressToolbar = new ToolbarComponents(addressToolbarPanel, addressToolbarGripPanel);
+            volumeToolbar = new ToolbarComponents(volumeToolbarPanel, volumeToolbarGripPanel);
+            spotifyToolbar = new ToolbarComponents(spotifyToolbarPanel, spotifyToolbarGripPanel);
+            toolbarsById = new Dictionary<ToolbarId, ToolbarComponents>
             {
-                Dock = DockStyle.Left,
-                Width = 8,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor,
-                Cursor = Cursors.SizeWE,
-                Visible = false
+                [ToolbarId.QuickLaunch] = quickLaunchToolbar,
+                [ToolbarId.Address] = addressToolbar,
+                [ToolbarId.Volume] = volumeToolbar,
+                [ToolbarId.Spotify] = spotifyToolbar
             };
-            spotifyToolbarGripPanel.Paint += ToolbarGripPanel_Paint;
 
             btnSpotifyPrevious = new Button
             {
@@ -926,18 +1132,27 @@ namespace win9xplorer
                 BackColor = taskbarBaseColor
             };
 
-            runningProgramsGripPanel = new Panel
-            {
-                Dock = DockStyle.Left,
-                Width = 8,
-                Margin = Padding.Empty,
-                Padding = Padding.Empty,
-                BackColor = taskbarBaseColor,
-                Cursor = Cursors.Default,
-                Visible = true,
-                Enabled = false
-            };
-            runningProgramsGripPanel.Paint += ToolbarGripPanel_Paint;
+            runningProgramsGripPanel = CreateGripPanel(
+                visible: true,
+                enabled: false,
+                cursor: Cursors.Default);
+
+            toolbarGripRelations.Add(new ToolbarGripRelation(quickLaunchGripPanel, state => state.ShowQuickLaunch));
+            toolbarGripRelations.Add(new ToolbarGripRelation(addressToolbarGripPanel, state => state.ShowAddressInLeftRail));
+            toolbarGripRelations.Add(new ToolbarGripRelation(addressRowGripPanel, state => state.UseDedicatedAddressRow));
+            toolbarGripRelations.Add(new ToolbarGripRelation(volumeToolbarGripPanel, state => state.ShowVolume));
+            toolbarGripRelations.Add(new ToolbarGripRelation(spotifyToolbarGripPanel, state => state.ShowSpotify));
+            toolbarGripRelations.Add(new ToolbarGripRelation(runningProgramsGripPanel, _ => true));
+
+            toolbarSeparatorRelations.Add(new ToolbarSeparatorRelation(
+                toolbarsSeparatorPanel,
+                state => state.ShowQuickLaunch && state.ShowAddressInLeftRail));
+            toolbarSeparatorRelations.Add(new ToolbarSeparatorRelation(
+                spotifyToolbarSeparatorPanel,
+                state => state.ShowSpotify && (state.ShowQuickLaunch || state.ShowAddressInLeftRail || state.ShowVolume)));
+            toolbarSeparatorRelations.Add(new ToolbarSeparatorRelation(
+                startToolbarSeparatorPanel,
+                state => state.ShowQuickLaunch || state.ShowAddressInLeftRail || state.ShowVolume || state.ShowSpotify));
 
             taskButtonsHostPanel = new Panel
             {
@@ -990,7 +1205,7 @@ namespace win9xplorer
             contentPanel.Controls.Add(startHostPanel);
 
             Controls.Add(contentPanel);
-            Controls.Add(resizeGripPanel);
+            Controls.Add(taskbarResizeHandlePanel);
             trayIconsPanel.Controls.Add(customVolumeIcon);
             trayIconsPanel.Controls.Add(languageIndicatorLabel);
             trayIconsPanel.Controls.Add(imeIndicatorLabel);
@@ -1008,9 +1223,9 @@ namespace win9xplorer
             MouseDown += TaskbarResize_MouseDown;
             MouseMove += TaskbarResize_MouseMove;
             MouseUp += TaskbarResize_MouseUp;
-            resizeGripPanel.MouseDown += TaskbarResize_MouseDown;
-            resizeGripPanel.MouseMove += TaskbarResize_MouseMove;
-            resizeGripPanel.MouseUp += TaskbarResize_MouseUp;
+            taskbarResizeHandlePanel.MouseDown += TaskbarResize_MouseDown;
+            taskbarResizeHandlePanel.MouseMove += TaskbarResize_MouseMove;
+            taskbarResizeHandlePanel.MouseUp += TaskbarResize_MouseUp;
             taskButtonsPanel.MouseUp += TaskButtonsPanel_MouseUp;
             taskButtonsPanel.MouseDown += ChildTaskbarResize_MouseDown;
             taskButtonsPanel.MouseMove += ChildTaskbarResize_MouseMove;
@@ -1028,9 +1243,9 @@ namespace win9xplorer
             spotifyToolbarPanel.MouseDown += ChildTaskbarResize_MouseDown;
             spotifyToolbarPanel.MouseMove += ChildTaskbarResize_MouseMove;
             spotifyToolbarPanel.MouseUp += ChildTaskbarResize_MouseUp;
-            spotifyToolbarGripPanel.MouseDown += ChildTaskbarResize_MouseDown;
-            spotifyToolbarGripPanel.MouseMove += ChildTaskbarResize_MouseMove;
-            spotifyToolbarGripPanel.MouseUp += ChildTaskbarResize_MouseUp;
+            volumeToolbarPanel.MouseDown += ChildTaskbarResize_MouseDown;
+            volumeToolbarPanel.MouseMove += ChildTaskbarResize_MouseMove;
+            volumeToolbarPanel.MouseUp += ChildTaskbarResize_MouseUp;
             btnSpotifyPrevious.MouseDown += ChildTaskbarResize_MouseDown;
             btnSpotifyPrevious.MouseMove += ChildTaskbarResize_MouseMove;
             btnSpotifyPrevious.MouseUp += ChildTaskbarResize_MouseUp;
@@ -1054,6 +1269,12 @@ namespace win9xplorer
 
             refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
             refreshTimer.Tick += (_, _) => RefreshTaskbar();
+            trayIconStabilityTimer = new System.Windows.Forms.Timer { Interval = TrayIconNewIconStabilityMs };
+            trayIconStabilityTimer.Tick += (_, _) =>
+            {
+                trayIconStabilityTimer.Stop();
+                SyncTrayIcons();
+            };
             trayResizeShrinkTimer = new System.Windows.Forms.Timer { Interval = 900 };
             trayResizeShrinkTimer.Tick += (_, _) =>
             {
@@ -1280,6 +1501,8 @@ namespace win9xplorer
             instance = null;
             refreshTimer.Stop();
             refreshTimer.Dispose();
+            trayIconStabilityTimer.Stop();
+            trayIconStabilityTimer.Dispose();
             trayResizeShrinkTimer.Stop();
             trayResizeShrinkTimer.Dispose();
             SaveTaskbarSettings();
@@ -1345,6 +1568,9 @@ namespace win9xplorer
             customVolumeIcon.Image?.Dispose();
             customVolumeIcon.Dispose();
             customVolumeIconImage.Dispose();
+            volumeToolbarTrackBar.ValueChanged -= VolumeToolbarTrackBar_ValueChanged;
+            volumeToolbarTrackBar.MouseDown -= VolumeToolbarTrackBar_MouseDown;
+            volumeToolbarTrackBar.MouseUp -= VolumeToolbarTrackBar_MouseUp;
             spotifyPreviousIconImage.Dispose();
             spotifyPlayIconImage.Dispose();
             spotifyNextIconImage.Dispose();
@@ -1379,7 +1605,7 @@ namespace win9xplorer
 
         private void RetroTaskbarForm_Paint(object? sender, PaintEventArgs e)
         {
-            // Top bevel is rendered by resizeGripPanel.
+            // Top bevel is rendered by taskbarResizeHandlePanel.
         }
 
         private ContextMenuStrip BuildStartMenu()
@@ -3174,6 +3400,7 @@ namespace win9xplorer
             var toolbarsItem = new ToolStripMenuItem("Toolbars");
             var quickLaunchToolbarItem = new ToolStripMenuItem("Quick Launch", null, (_, _) => ToggleQuickLaunchToolbar());
             var addressToolbarItem = new ToolStripMenuItem("Address", null, (_, _) => ToggleAddressToolbar());
+            var volumeToolbarItem = new ToolStripMenuItem("Volume", null, (_, _) => ToggleVolumeToolbar());
             var spotifyToolbarItem = new ToolStripMenuItem("Spotify Controls", null, (_, _) => ToggleSpotifyToolbar());
             var linksToolbarItem = new ToolStripMenuItem("Links") { Enabled = false };
             var desktopToolbarItem = new ToolStripMenuItem("Desktop") { Enabled = false };
@@ -3181,6 +3408,7 @@ namespace win9xplorer
             var quickLaunchLeftItem = new ToolStripMenuItem("Quick Launch Left of Address", null, (_, _) => SetToolbarOrder(addressFirst: false));
             toolbarsItem.DropDownItems.Add(quickLaunchToolbarItem);
             toolbarsItem.DropDownItems.Add(addressToolbarItem);
+            toolbarsItem.DropDownItems.Add(volumeToolbarItem);
             toolbarsItem.DropDownItems.Add(spotifyToolbarItem);
             toolbarsItem.DropDownItems.Add(linksToolbarItem);
             toolbarsItem.DropDownItems.Add(desktopToolbarItem);
@@ -3259,6 +3487,7 @@ namespace win9xplorer
             {
                 quickLaunchToolbarItem.Checked = showQuickLaunchToolbar;
                 addressToolbarItem.Checked = showAddressToolbar;
+                volumeToolbarItem.Checked = showVolumeToolbar;
                 spotifyToolbarItem.Checked = showSpotifyToolbar;
                 var canOrderLeftRail = showQuickLaunchToolbar && showAddressToolbar && !ShouldUseDedicatedAddressToolbarRow();
                 addressLeftItem.Enabled = canOrderLeftRail;
@@ -3342,6 +3571,13 @@ namespace win9xplorer
             SaveTaskbarSettings();
         }
 
+        private void ToggleVolumeToolbar()
+        {
+            showVolumeToolbar = !showVolumeToolbar;
+            ApplyToolbarLayout();
+            SaveTaskbarSettings();
+        }
+
         private void ExecuteSpotifyCommand(SpotifyController.SpotifyCommand command)
         {
             if (spotifyController.TryExecute(command))
@@ -3398,11 +3634,6 @@ namespace win9xplorer
             SaveTaskbarSettings();
         }
 
-        private bool ShouldUseDedicatedAddressToolbarRow()
-        {
-            return taskbarRows > 1 && showAddressToolbar;
-        }
-
         private int GetTaskButtonRows()
         {
             var rows = taskbarRows;
@@ -3414,174 +3645,6 @@ namespace win9xplorer
             return Math.Clamp(rows, 1, 3);
         }
 
-        private int GetDedicatedAddressToolbarHeight()
-        {
-            return TaskbarButtonHeight;
-        }
-
-        private int GetAddressInputHostHeight()
-        {
-            var textHeight = Math.Max(18, addressToolbarComboBox.Height);
-            return Math.Max(textHeight + 4, TaskbarButtonHeight - 8);
-        }
-
-        private void ApplyToolbarLayout(bool refreshBounds = true)
-        {
-            var useDedicatedAddressToolbarRow = ShouldUseDedicatedAddressToolbarRow();
-            var showAddressInLeftToolbarRail = showAddressToolbar && !useDedicatedAddressToolbarRow;
-
-            quickLaunchPanel.Visible = showQuickLaunchToolbar;
-            addressToolbarPanel.Visible = showAddressToolbar;
-            spotifyToolbarPanel.Visible = showSpotifyToolbar;
-            quickLaunchGripPanel.Visible = showQuickLaunchToolbar;
-            addressToolbarGripPanel.Visible = showAddressInLeftToolbarRail;
-            addressRowGripPanel.Visible = useDedicatedAddressToolbarRow;
-            spotifyToolbarGripPanel.Visible = showSpotifyToolbar;
-            runningProgramsGripPanel.Visible = true;
-            addressRowSeparatorPanel.Visible = useDedicatedAddressToolbarRow;
-            addressRowHostPanel.Visible = useDedicatedAddressToolbarRow;
-
-            taskButtonsHostPanel.SuspendLayout();
-            if (taskButtonsHostPanel.Controls.Contains(addressToolbarPanel))
-            {
-                taskButtonsHostPanel.Controls.Remove(addressToolbarPanel);
-            }
-            if (addressRowHostPanel.Controls.Contains(addressToolbarPanel))
-            {
-                addressRowHostPanel.Controls.Remove(addressToolbarPanel);
-            }
-
-            addressToolbarPanel.Margin = Padding.Empty;
-            addressToolbarPanel.Dock = DockStyle.Left;
-            addressToolbarPanel.Width = 260;
-            addressToolbarPanel.Height = GetDedicatedAddressToolbarHeight();
-            addressInputHostPanel.Height = GetAddressInputHostHeight();
-            CenterAddressTextBoxVertically();
-
-            if (useDedicatedAddressToolbarRow)
-            {
-                addressRowHostPanel.Height = GetDedicatedAddressToolbarHeight() + AddressRowSeparatorHeight;
-                addressRowHostPanel.Controls.Add(addressToolbarPanel);
-                addressToolbarPanel.Dock = DockStyle.Fill;
-                addressToolbarPanel.BringToFront();
-            }
-
-            contentPanel.SuspendLayout();
-            contentPanel.Controls.Clear();
-            contentPanel.Controls.Add(taskButtonsHostPanel);
-            contentPanel.Controls.Add(notificationAreaPanel);
-            contentPanel.Controls.Add(taskButtonsSeparatorPanel);
-
-            if (showQuickLaunchToolbar && showAddressInLeftToolbarRail)
-            {
-                if (addressToolbarBeforeQuickLaunch)
-                {
-                    contentPanel.Controls.Add(quickLaunchPanel);
-                    contentPanel.Controls.Add(quickLaunchGripPanel);
-                    contentPanel.Controls.Add(toolbarsSeparatorPanel);
-                    contentPanel.Controls.Add(addressToolbarPanel);
-                    contentPanel.Controls.Add(addressToolbarGripPanel);
-                }
-                else
-                {
-                    contentPanel.Controls.Add(addressToolbarPanel);
-                    contentPanel.Controls.Add(addressToolbarGripPanel);
-                    contentPanel.Controls.Add(toolbarsSeparatorPanel);
-                    contentPanel.Controls.Add(quickLaunchPanel);
-                    contentPanel.Controls.Add(quickLaunchGripPanel);
-                }
-            }
-            else
-            {
-                if (showQuickLaunchToolbar)
-                {
-                    contentPanel.Controls.Add(quickLaunchPanel);
-                    contentPanel.Controls.Add(quickLaunchGripPanel);
-                }
-
-                if (showAddressInLeftToolbarRail)
-                {
-                    contentPanel.Controls.Add(addressToolbarPanel);
-                    contentPanel.Controls.Add(addressToolbarGripPanel);
-                }
-            }
-
-            var hasAnyToolbar = showQuickLaunchToolbar || showAddressInLeftToolbarRail;
-            if (showSpotifyToolbar)
-            {
-                if (hasAnyToolbar)
-                {
-                    contentPanel.Controls.Add(spotifyToolbarSeparatorPanel);
-                }
-
-                contentPanel.Controls.Add(spotifyToolbarPanel);
-                contentPanel.Controls.Add(spotifyToolbarGripPanel);
-                hasAnyToolbar = true;
-            }
-
-            startToolbarSeparatorPanel.Visible = hasAnyToolbar;
-            if (startToolbarSeparatorPanel.Visible)
-            {
-                contentPanel.Controls.Add(startToolbarSeparatorPanel);
-            }
-            contentPanel.Controls.Add(startHostPanel);
-            contentPanel.ResumeLayout();
-
-            taskButtonsHostPanel.ResumeLayout();
-
-            ResizeQuickLaunchPanel();
-            UpdateSpotifyToolbarLayout();
-            if (refreshBounds && IsHandleCreated)
-            {
-                SetTaskbarBounds();
-                RefreshTaskbar();
-            }
-        }
-
-        private void AddressInputHostPanel_Paint(object? sender, PaintEventArgs e)
-        {
-            var rect = new Rectangle(0, 0, addressInputHostPanel.Width - 1, addressInputHostPanel.Height - 1);
-            if (rect.Width <= 0 || rect.Height <= 0)
-            {
-                return;
-            }
-
-            using var fillBrush = new SolidBrush(Color.White);
-            e.Graphics.FillRectangle(fillBrush, rect);
-            using var darkPen = new Pen(taskbarDarkColor);
-            using var lightPen = new Pen(taskbarLightColor);
-            e.Graphics.DrawLine(darkPen, rect.Left, rect.Top, rect.Right, rect.Top);
-            e.Graphics.DrawLine(darkPen, rect.Left, rect.Top, rect.Left, rect.Bottom);
-            e.Graphics.DrawLine(lightPen, rect.Right, rect.Top, rect.Right, rect.Bottom);
-            e.Graphics.DrawLine(lightPen, rect.Left, rect.Bottom, rect.Right, rect.Bottom);
-        }
-
-        private void CenterAddressTextBoxVertically()
-        {
-            addressToolbarComboBox.Left = 2;
-            addressToolbarComboBox.Width = Math.Max(8, addressInputHostPanel.ClientSize.Width - 4);
-            var desiredTop = Math.Max(0, (addressInputHostPanel.ClientSize.Height - addressToolbarComboBox.Height) / 2);
-            addressToolbarComboBox.Top = desiredTop;
-        }
-
-        private void ApplyClassicAddressComboStyle()
-        {
-            if (!addressToolbarComboBox.IsHandleCreated)
-            {
-                return;
-            }
-
-            try
-            {
-                // Disable themed rendering for this control to get classic gray/bevel dropdown button.
-                _ = WinApi.SetWindowTheme(addressToolbarComboBox.Handle, string.Empty, string.Empty);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"Failed to apply classic address combo style: {ex.Message}");
-            }
-        }
-
         private void ToolbarGripPanel_Paint(object? sender, PaintEventArgs e)
         {
             if (sender is not Panel panel)
@@ -3590,23 +3653,30 @@ namespace win9xplorer
             }
 
             e.Graphics.Clear(taskbarBaseColor);
-            using var darkPen = new Pen(taskbarDarkColor);
-            using var lightPen = new Pen(taskbarLightColor);
             var left = 2;
-            var top = ReferenceEquals(panel, addressRowGripPanel)
-                ? AddressRowSeparatorHeight + 3
-                : 2;
+            var top = 2;
             var bottom = Math.Max(top, panel.Height - 5);
-            e.Graphics.DrawLine(lightPen, left, top, left, bottom);
-            e.Graphics.DrawLine(lightPen, left + 1, top, left + 1, bottom);
-            e.Graphics.DrawLine(darkPen, left + 2, top, left + 2, bottom);
+            DrawToolbarGrip(e.Graphics, left, top, bottom);
+        }
 
-            // Continue the dedicated address-row separator into the grip area.
-            if (ReferenceEquals(panel, addressRowGripPanel) && addressRowSeparatorPanel.Visible)
+        private void DrawToolbarGrip(Graphics graphics, int left, int top, int bottom)
+        {
+            using var lightBrush = new SolidBrush(taskbarLightColor);
+            using var baseBrush = new SolidBrush(taskbarBaseColor);
+            using var darkBrush = new SolidBrush(taskbarDarkColor);
+
+            for (var y = top; y <= bottom; y++)
             {
-                var maxX = Math.Max(0, panel.Width);
-                e.Graphics.DrawLine(darkPen, 0, 0, maxX, 0);
-                e.Graphics.DrawLine(lightPen, 0, 1, maxX, 1);
+                var firstBrush = y == bottom ? darkBrush : lightBrush;
+                var secondBrush = y == top
+                    ? lightBrush
+                    : y == bottom
+                        ? darkBrush
+                        : baseBrush;
+
+                graphics.FillRectangle(firstBrush, left, y, 1, 1);
+                graphics.FillRectangle(secondBrush, left + 1, y, 1, 1);
+                graphics.FillRectangle(darkBrush, left + 2, y, 1, 1);
             }
         }
 
@@ -3638,10 +3708,12 @@ namespace win9xplorer
             var middle = panel.Height / 2;
             var yDark = Math.Max(0, middle - 1);
             var yLight = Math.Min(panel.Height - 1, middle);
+            var startX = 0;
+            var endX = Math.Max(startX, panel.Width - 1);
             using var darkPen = new Pen(taskbarDarkColor);
             using var lightPen = new Pen(taskbarLightColor);
-            e.Graphics.DrawLine(darkPen, 0, yDark, Math.Max(0, panel.Width - 1), yDark);
-            e.Graphics.DrawLine(lightPen, 0, yLight, Math.Max(0, panel.Width - 1), yLight);
+            e.Graphics.DrawLine(darkPen, startX, yDark, endX, yDark);
+            e.Graphics.DrawLine(lightPen, startX, yLight, endX, yLight);
         }
 
         private void ToolbarGripPanel_MouseDown(object? sender, MouseEventArgs e)
@@ -3719,100 +3791,6 @@ namespace win9xplorer
                 ApplyToolbarLayout();
                 SaveTaskbarSettings();
             }
-        }
-
-        private void AddressToolbarComboBox_KeyDown(object? sender, KeyEventArgs e)
-        {
-            if (e.KeyCode != Keys.Enter)
-            {
-                return;
-            }
-
-            e.Handled = true;
-            e.SuppressKeyPress = true;
-            OpenAddressFromToolbar();
-        }
-
-        private void OpenAddressFromToolbar()
-        {
-            var text = addressToolbarComboBox.Text.Trim();
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return;
-            }
-
-            if (Directory.Exists(text) || File.Exists(text))
-            {
-                LaunchProcess("explorer.exe", $"\"{text}\"");
-                AddAddressToolbarHistoryEntry(text);
-                return;
-            }
-
-            if (text.Contains(":") || text.StartsWith("\\", StringComparison.Ordinal))
-            {
-                LaunchProcess("explorer.exe", text);
-                AddAddressToolbarHistoryEntry(text);
-                return;
-            }
-
-            if (!text.Contains('.'))
-            {
-                var candidatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), text);
-                if (Directory.Exists(candidatePath))
-                {
-                    LaunchProcess("explorer.exe", $"\"{candidatePath}\"");
-                    AddAddressToolbarHistoryEntry(candidatePath);
-                    return;
-                }
-            }
-
-            if (!Uri.TryCreate(text, UriKind.Absolute, out _))
-            {
-                text = "https://" + text;
-            }
-
-            LaunchProcess(text);
-            AddAddressToolbarHistoryEntry(text);
-        }
-
-        private void AddAddressToolbarHistoryEntry(string entry)
-        {
-            var value = entry.Trim();
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return;
-            }
-
-            addressToolbarHistory.RemoveAll(existing => string.Equals(existing, value, StringComparison.OrdinalIgnoreCase));
-            addressToolbarHistory.Insert(0, value);
-            if (addressToolbarHistory.Count > AddressHistoryMaxEntries)
-            {
-                addressToolbarHistory.RemoveRange(AddressHistoryMaxEntries, addressToolbarHistory.Count - AddressHistoryMaxEntries);
-            }
-
-            RefreshAddressToolbarHistoryItems();
-            addressToolbarComboBox.Text = value;
-            addressToolbarComboBox.SelectionStart = addressToolbarComboBox.Text.Length;
-            SaveTaskbarSettings();
-        }
-
-        private void RefreshAddressToolbarHistoryItems()
-        {
-            if (addressToolbarComboBox.IsDisposed)
-            {
-                return;
-            }
-
-            var currentText = addressToolbarComboBox.Text;
-            addressToolbarComboBox.BeginUpdate();
-            addressToolbarComboBox.Items.Clear();
-            foreach (var item in addressToolbarHistory)
-            {
-                addressToolbarComboBox.Items.Add(item);
-            }
-            addressToolbarComboBox.EndUpdate();
-            addressToolbarComboBox.Text = currentText;
-            addressToolbarComboBox.SelectionStart = addressToolbarComboBox.Text.Length;
         }
 
         private void OpenTaskManager()
@@ -4402,7 +4380,9 @@ namespace win9xplorer
                 ShowAddressToolbar: showAddressToolbar,
                 AddressToolbarBeforeQuickLaunch: addressToolbarBeforeQuickLaunch,
                 ShowSpotifyToolbar: showSpotifyToolbar,
+                ShowVolumeToolbar: showVolumeToolbar,
                 AddressHistory: addressToolbarHistory.ToList(),
+                LastAddressText: addressToolbarComboBox.Text.Trim(),
                 StartMenuRecentPrograms: startMenuRecentPrograms
                     .Take(startMenuRecentProgramsMaxCount)
                     .Select(entry => new StartMenuRecentProgramSetting
@@ -4548,7 +4528,7 @@ namespace win9xplorer
         private void RefreshTaskbarColors()
         {
             BackColor = taskbarBaseColor;
-            resizeGripPanel.BackColor = taskbarBaseColor;
+            taskbarResizeHandlePanel.BackColor = taskbarBaseColor;
             contentPanel.BackColor = taskbarBaseColor;
             startHostPanel.BackColor = taskbarBaseColor;
             taskButtonsHostPanel.BackColor = taskbarBaseColor;
@@ -4556,6 +4536,7 @@ namespace win9xplorer
             taskButtonsPanel.BackColor = taskbarBaseColor;
             quickLaunchPanel.BackColor = taskbarBaseColor;
             addressToolbarPanel.BackColor = taskbarBaseColor;
+            volumeToolbarPanel.BackColor = taskbarBaseColor;
             spotifyToolbarPanel.BackColor = taskbarBaseColor;
             spotifyControlsPanel.BackColor = taskbarBaseColor;
             spotifyNowPlayingLabel.BackColor = taskbarBaseColor;
@@ -4568,9 +4549,7 @@ namespace win9xplorer
             taskButtonsSeparatorPanel.BackColor = taskbarBaseColor;
             addressRowSeparatorPanel.BackColor = taskbarBaseColor;
             startToolbarSeparatorPanel.BackColor = taskbarBaseColor;
-            addressToolbarGripPanel.BackColor = taskbarBaseColor;
-            addressRowGripPanel.BackColor = taskbarBaseColor;
-            spotifyToolbarGripPanel.BackColor = taskbarBaseColor;
+            GripPanel.ApplyTheme(taskbarBaseColor, quickLaunchGripPanel, addressToolbarGripPanel, addressRowGripPanel, volumeToolbarGripPanel, spotifyToolbarGripPanel, runningProgramsGripPanel);
             addressToolbarComboBox.ForeColor = taskbarFontColor;
             addressToolbarComboBox.BackColor = Color.White;
             ApplyClassicAddressComboStyle();
@@ -4588,7 +4567,7 @@ namespace win9xplorer
 
             UpdateResizeUiState();
             notificationAreaPanel.Invalidate();
-            resizeGripPanel.Invalidate();
+            taskbarResizeHandlePanel.Invalidate();
         }
 
         private void ApplyTaskbarButtonStyle(Button button)
@@ -5049,7 +5028,7 @@ namespace win9xplorer
             }
             else if (isHovered)
             {
-                // Hover: 1px raised bevel (凸).
+                // Hover: 1px raised bevel (??.
                 ControlPaint.DrawBorder(e.Graphics, rect,
                     taskbarLightColor, 1, ButtonBorderStyle.Solid,
                     taskbarLightColor, 1, ButtonBorderStyle.Solid,
@@ -5820,9 +5799,9 @@ namespace win9xplorer
 
             if (taskbarLocked)
             {
-                for (var i = 0; i < lines && i < resizeGripPanel.Height; i++)
+                for (var i = 0; i < lines && i < taskbarResizeHandlePanel.Height; i++)
                 {
-                    e.Graphics.DrawLine(lightPen, 0, i, resizeGripPanel.Width, i);
+                    e.Graphics.DrawLine(lightPen, 0, i, taskbarResizeHandlePanel.Width, i);
                 }
 
                 return;
@@ -5830,19 +5809,19 @@ namespace win9xplorer
 
             using var darkPen = new Pen(taskbarDarkColor);
             var lightLines = Math.Max(1, lines - 1);
-            for (var i = 0; i < lightLines && i < resizeGripPanel.Height; i++)
+            for (var i = 0; i < lightLines && i < taskbarResizeHandlePanel.Height; i++)
             {
-                e.Graphics.DrawLine(lightPen, 0, i, resizeGripPanel.Width, i);
+                e.Graphics.DrawLine(lightPen, 0, i, taskbarResizeHandlePanel.Width, i);
             }
 
             for (var i = lightLines; i < lines; i++)
             {
-                if (i >= resizeGripPanel.Height)
+                if (i >= taskbarResizeHandlePanel.Height)
                 {
                     break;
                 }
 
-                e.Graphics.DrawLine(darkPen, 0, i, resizeGripPanel.Width, i);
+                e.Graphics.DrawLine(darkPen, 0, i, taskbarResizeHandlePanel.Width, i);
             }
         }
 
@@ -5866,20 +5845,11 @@ namespace win9xplorer
 
         private void UpdateResizeUiState()
         {
-            resizeGripPanel.Visible = true;
-            resizeGripPanel.Height = ResizeGripHeight;
-            resizeGripPanel.Cursor = taskbarLocked ? Cursors.Default : Cursors.SizeNS;
-            var toolbarCursor = taskbarLocked ? Cursors.Default : Cursors.SizeWE;
-            quickLaunchGripPanel.Cursor = toolbarCursor;
-            addressToolbarGripPanel.Cursor = toolbarCursor;
-            addressRowGripPanel.Cursor = toolbarCursor;
-            spotifyToolbarGripPanel.Cursor = toolbarCursor;
-            resizeGripPanel.Invalidate();
-            quickLaunchGripPanel.Invalidate();
-            addressToolbarGripPanel.Invalidate();
-            addressRowGripPanel.Invalidate();
-            spotifyToolbarGripPanel.Invalidate();
-            runningProgramsGripPanel.Invalidate();
+            taskbarResizeHandlePanel.Visible = true;
+            taskbarResizeHandlePanel.Height = ResizeGripHeight;
+            taskbarResizeHandlePanel.Cursor = taskbarLocked ? Cursors.Default : Cursors.SizeNS;
+            taskbarResizeHandlePanel.Invalidate();
+            GripPanel.ApplyLockState(taskbarLocked, quickLaunchGripPanel, addressToolbarGripPanel, addressRowGripPanel, volumeToolbarGripPanel, spotifyToolbarGripPanel, runningProgramsGripPanel);
         }
 
         private void SetTaskbarLocked(bool locked)
@@ -6501,6 +6471,8 @@ namespace win9xplorer
                 }
 
                 trayIconControls.Clear();
+                trayIconFirstSeenUtc.Clear();
+                trayInitialSyncComplete = false;
                 trayIconsPanel.Controls.Clear();
                 ResizeTrayPanel(allowShrink: true);
             }
@@ -6557,7 +6529,45 @@ namespace win9xplorer
         private void SyncTrayIcons()
         {
             var currentIcons = shellManager.NotificationArea.TrayIcons.ToList();
-            var visibleIcons = currentIcons.Where(icon => !icon.IsHidden && !ShouldHideTrayIcon(icon)).ToList();
+            var now = DateTime.UtcNow;
+            var visibleCandidates = currentIcons.Where(icon => !icon.IsHidden && !ShouldHideTrayIcon(icon)).ToList();
+            var visibleCandidateSet = visibleCandidates.ToHashSet();
+
+            foreach (var icon in trayIconFirstSeenUtc.Keys.Where(icon => !visibleCandidateSet.Contains(icon)).ToList())
+            {
+                trayIconFirstSeenUtc.Remove(icon);
+            }
+
+            foreach (var icon in visibleCandidates)
+            {
+                trayIconFirstSeenUtc.TryAdd(icon, now);
+            }
+
+            var hasPendingIcons = false;
+            var visibleIcons = visibleCandidates
+                .Where(icon =>
+                {
+                    if (!trayInitialSyncComplete || trayIconControls.ContainsKey(icon))
+                    {
+                        return true;
+                    }
+
+                    if (!trayController.HasStableIdentity(icon))
+                    {
+                        hasPendingIcons = true;
+                        return false;
+                    }
+
+                    if (trayIconFirstSeenUtc.TryGetValue(icon, out var firstSeenUtc) &&
+                        (now - firstSeenUtc).TotalMilliseconds >= TrayIconNewIconStabilityMs)
+                    {
+                        return true;
+                    }
+
+                    hasPendingIcons = true;
+                    return false;
+                })
+                .ToList();
 
             var removedIcons = trayIconControls.Keys.Where(icon => !visibleIcons.Contains(icon)).ToList();
             foreach (var icon in removedIcons)
@@ -6615,6 +6625,12 @@ namespace win9xplorer
 
             ResizeTrayPanel();
             RefreshTrayHostPlacement();
+            trayInitialSyncComplete = true;
+
+            if (hasPendingIcons && !trayIconStabilityTimer.Enabled)
+            {
+                trayIconStabilityTimer.Start();
+            }
         }
 
         private PictureBox CreateTrayIconControl(TrayNotifyIcon icon)
@@ -6949,12 +6965,22 @@ namespace win9xplorer
                 return;
             }
 
+            if (trayController.ShouldSuppressHoverForwarding(icon))
+            {
+                return;
+            }
+
             trayIconInteractionService.ForwardMouseMove(icon, GetCursorPositionParam());
         }
 
         private void TrayIcon_MouseEnter(object? sender, EventArgs e)
         {
             if (sender is not PictureBox control || control.Tag is not TrayNotifyIcon icon)
+            {
+                return;
+            }
+
+            if (trayController.ShouldSuppressHoverForwarding(icon))
             {
                 return;
             }
@@ -6966,6 +6992,11 @@ namespace win9xplorer
         private void TrayIcon_MouseLeave(object? sender, EventArgs e)
         {
             if (sender is not PictureBox control || control.Tag is not TrayNotifyIcon icon)
+            {
+                return;
+            }
+
+            if (trayController.ShouldSuppressHoverForwarding(icon))
             {
                 return;
             }
@@ -7464,6 +7495,7 @@ namespace win9xplorer
             SetTaskbarBounds();
             UpdateClockDisplay();
             UpdateInputMethodIndicators();
+            SyncVolumeToolbarFromSystem();
             UpdateSpotifyToolbarState();
             UpdateSpotifyToolbarLayout();
 
@@ -7534,11 +7566,11 @@ namespace win9xplorer
             clockLineTime = now.ToString("tt hh:mm");
             lblClock.Text = string.Empty;
 
-            var lineWidth = Math.Max(
-                TextRenderer.MeasureText(clockLineDate, lblClock.Font).Width,
-                Math.Max(
-                    TextRenderer.MeasureText(clockLineWeekday, lblClock.Font).Width,
-                    TextRenderer.MeasureText(clockLineTime, lblClock.Font).Width));
+            var clockLines = GetClockLinesForRendering();
+            var lineWidth = clockLines
+                .Select(line => TextRenderer.MeasureText(line, lblClock.Font).Width)
+                .DefaultIfEmpty(0)
+                .Max();
             var preferredWidth = lineWidth + 14;
             lblClock.Width = Math.Clamp(preferredWidth, 110, 260);
             lblClock.Invalidate();
@@ -7546,18 +7578,37 @@ namespace win9xplorer
 
         private void LblClock_Paint(object? sender, PaintEventArgs e)
         {
+            var lines = GetClockLinesForRendering();
+            if (lines.Count == 0)
+            {
+                return;
+            }
+
             var lineHeight = TextRenderer.MeasureText("Hg", lblClock.Font).Height;
-            var totalHeight = (lineHeight * 3) + (ClockLineSpacingPx * 2);
+            var totalHeight = (lineHeight * lines.Count) + (ClockLineSpacingPx * Math.Max(0, lines.Count - 1));
             var top = Math.Max(0, (lblClock.ClientSize.Height - totalHeight) / 2);
             var format = TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis;
 
-            var rect1 = new Rectangle(0, top, lblClock.ClientSize.Width, lineHeight);
-            var rect2 = new Rectangle(0, top + lineHeight + ClockLineSpacingPx, lblClock.ClientSize.Width, lineHeight);
-            var rect3 = new Rectangle(0, top + (lineHeight * 2) + (ClockLineSpacingPx * 2), lblClock.ClientSize.Width, lineHeight);
+            for (var i = 0; i < lines.Count; i++)
+            {
+                var y = top + (i * (lineHeight + ClockLineSpacingPx));
+                var rect = new Rectangle(0, y, lblClock.ClientSize.Width, lineHeight);
+                TextRenderer.DrawText(e.Graphics, lines[i], lblClock.Font, rect, lblClock.ForeColor, format);
+            }
+        }
 
-            TextRenderer.DrawText(e.Graphics, clockLineDate, lblClock.Font, rect1, lblClock.ForeColor, format);
-            TextRenderer.DrawText(e.Graphics, clockLineWeekday, lblClock.Font, rect2, lblClock.ForeColor, format);
-            TextRenderer.DrawText(e.Graphics, clockLineTime, lblClock.Font, rect3, lblClock.ForeColor, format);
+        private List<string> GetClockLinesForRendering()
+        {
+            var lineHeight = TextRenderer.MeasureText("Hg", lblClock.Font).Height;
+            var maxLines = (lblClock.ClientSize.Height + ClockLineSpacingPx) / (lineHeight + ClockLineSpacingPx);
+
+            return maxLines switch
+            {
+                >= 3 => new List<string> { clockLineDate, clockLineWeekday, clockLineTime },
+                2 => new List<string> { clockLineDate, clockLineTime },
+                1 => new List<string> { clockLineTime },
+                _ => new List<string>()
+            };
         }
 
         private void DisposeTaskButton(Button button, bool removeFromPanel)
@@ -7835,6 +7886,153 @@ namespace win9xplorer
             RefreshTrayHostPlacement();
         }
 
+        private static int GetMasterVolumePercent()
+        {
+            if (!TryGetAudioEndpointVolume(out var endpointVolume) || endpointVolume is null)
+            {
+                return 50;
+            }
+            try
+            {
+                _ = endpointVolume.GetMasterVolumeLevelScalar(out var level);
+                return Math.Clamp((int)Math.Round(level * 100f), 0, 100);
+            }
+            catch
+            {
+                return 50;
+            }
+            finally
+            {
+                if (endpointVolume is not null)
+                {
+                    Marshal.ReleaseComObject(endpointVolume);
+                }
+            }
+        }
+
+        private static void SetMasterVolumePercent(int value)
+        {
+            if (!TryGetAudioEndpointVolume(out var endpointVolume) || endpointVolume is null)
+            {
+                return;
+            }
+            try
+            {
+                var level = Math.Clamp(value, 0, 100) / 100f;
+                _ = endpointVolume.SetMasterVolumeLevelScalar(level, Guid.Empty);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                if (endpointVolume is not null)
+                {
+                    Marshal.ReleaseComObject(endpointVolume);
+                }
+            }
+        }
+
+        private static bool TryGetAudioEndpointVolume(out IAudioEndpointVolume? endpointVolume)
+        {
+            endpointVolume = null;
+            object? enumeratorObject = null;
+            IMMDeviceEnumerator? deviceEnumerator = null;
+            IMMDevice? device = null;
+
+            try
+            {
+                enumeratorObject = Activator.CreateInstance(Type.GetTypeFromCLSID(CLSID_MMDeviceEnumerator)!);
+                if (enumeratorObject is not IMMDeviceEnumerator enumerator)
+                {
+                    return false;
+                }
+
+                deviceEnumerator = enumerator;
+                if (deviceEnumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out device!) != 0 || device is null)
+                {
+                    return false;
+                }
+
+                var endpointVolumeGuid = IID_IAudioEndpointVolume;
+                if (device.Activate(ref endpointVolumeGuid, CLSCTX_ALL, IntPtr.Zero, out var endpointObject) != 0)
+                {
+                    return false;
+                }
+
+                endpointVolume = endpointObject as IAudioEndpointVolume;
+                return endpointVolume is not null;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (device is not null)
+                {
+                    Marshal.ReleaseComObject(device);
+                }
+
+                if (deviceEnumerator is not null)
+                {
+                    Marshal.ReleaseComObject(deviceEnumerator);
+                }
+
+                if (enumeratorObject is not null && Marshal.IsComObject(enumeratorObject))
+                {
+                    Marshal.ReleaseComObject(enumeratorObject);
+                }
+            }
+        }
+
+        private void SyncVolumeToolbarFromSystem()
+        {
+            if (suppressVolumeToolbarEvents || isVolumeToolbarDragging || volumeToolbarTrackBar.IsDisposed)
+            {
+                return;
+            }
+
+            var volume = GetMasterVolumePercent();
+            if (volumeToolbarTrackBar.Value == volume)
+            {
+                return;
+            }
+
+            suppressVolumeToolbarEvents = true;
+            volumeToolbarTrackBar.Value = volume;
+            suppressVolumeToolbarEvents = false;
+        }
+
+        private void VolumeToolbarTrackBar_ValueChanged(object? sender, EventArgs e)
+        {
+            if (suppressVolumeToolbarEvents)
+            {
+                return;
+            }
+
+            SetMasterVolumePercent(volumeToolbarTrackBar.Value);
+        }
+
+        private void VolumeToolbarTrackBar_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                isVolumeToolbarDragging = true;
+            }
+        }
+
+        private void VolumeToolbarTrackBar_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            isVolumeToolbarDragging = false;
+            SetMasterVolumePercent(volumeToolbarTrackBar.Value);
+        }
+
         private void RefreshTrayHostPlacement()
         {
             UpdateTrayHostSizeData();
@@ -8041,3 +8239,6 @@ namespace win9xplorer
         }
     }
 }
+
+
+
