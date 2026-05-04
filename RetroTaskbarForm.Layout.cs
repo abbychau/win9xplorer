@@ -96,7 +96,7 @@ namespace win9xplorer
                 {
                     var child = addressRowHostPanel.Controls[i];
                     var childId =
-                        ReferenceEquals(child, volumeToolbarGripPanel) ? nameof(volumeToolbarGripPanel) :
+                        ReferenceEquals(child, volumeToolbar.Grip) ? "volumeToolbar.Grip" :
                         ReferenceEquals(child, volumeToolbarPanel) ? nameof(volumeToolbarPanel) :
                         ReferenceEquals(child, addressToolbarSeparatorPanel) ? nameof(addressToolbarSeparatorPanel) :
                         ReferenceEquals(child, addressRowGripPanel) ? nameof(addressRowGripPanel) :

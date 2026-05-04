@@ -12,10 +12,10 @@ namespace win9xplorer
 
     internal sealed class ToolbarComponents
     {
-        public ToolbarComponents(Panel panel, Control grip)
+        public ToolbarComponents(Panel panel, Func<Control> gripFactory)
         {
             Panel = panel;
-            Grip = grip;
+            Grip = gripFactory();
         }
 
         public Panel Panel { get; }

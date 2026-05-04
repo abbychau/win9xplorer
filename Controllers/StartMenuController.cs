@@ -26,12 +26,6 @@ namespace win9xplorer
 
         public void OnStartButtonClick()
         {
-            if (stateMachine.ShouldIgnoreStartButtonClick(DateTime.UtcNow))
-            {
-                stateMachine.ClearStartButtonMouseState();
-                return;
-            }
-
             if (stateMachine.WasStartMenuVisibleOnMouseDown())
             {
                 closeMenu();

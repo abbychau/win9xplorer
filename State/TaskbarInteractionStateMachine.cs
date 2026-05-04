@@ -2,16 +2,11 @@ namespace win9xplorer
 {
     internal sealed class TaskbarInteractionStateMachine
     {
-        private readonly TimeSpan startToggleDebounce;
-        private DateTime lastStartMenuClosedUtc = DateTime.MinValue;
         private bool startMenuVisibleOnMouseDown;
         private IntPtr activeWindowHandle = IntPtr.Zero;
         private IntPtr foregroundWindowBeforeTaskClick = IntPtr.Zero;
 
-        public TaskbarInteractionStateMachine(TimeSpan startToggleDebounce)
-        {
-            this.startToggleDebounce = startToggleDebounce;
-        }
+        public TaskbarInteractionStateMachine(TimeSpan _) { }
 
         public IntPtr ActiveWindowHandle => activeWindowHandle;
 
@@ -22,16 +17,10 @@ namespace win9xplorer
             startMenuVisibleOnMouseDown = menuVisible;
         }
 
-        public bool ShouldIgnoreStartButtonClick(DateTime utcNow)
-        {
-            return (utcNow - lastStartMenuClosedUtc) < startToggleDebounce;
-        }
-
         public bool WasStartMenuVisibleOnMouseDown() => startMenuVisibleOnMouseDown;
 
-        public void RecordStartMenuClosed(DateTime utcNow)
+        public void RecordStartMenuClosed(DateTime _)
         {
-            lastStartMenuClosedUtc = utcNow;
             startMenuVisibleOnMouseDown = false;
         }
 

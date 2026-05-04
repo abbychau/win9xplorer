@@ -210,7 +210,7 @@ namespace win9xplorer
         private bool injectedWinDownForChord;
         private int activeWinKeyVkCode;
         private readonly VolumePopupForm volumePopup;
-        private readonly TimeDetailsForm timeDetailsPopup;
+        private TimeDetailsForm? timeDetailsPopup;
         private readonly PictureBox customVolumeIcon;
         private readonly TrayIconInteractionService trayIconInteractionService = new();
         private readonly QuickLaunchRefreshMonitor quickLaunchRefreshMonitor;
@@ -254,6 +254,8 @@ namespace win9xplorer
         private bool isTaskbarResizeDragging;
         private readonly Dictionary<string, ProgramFolderCacheEntry> programFolderCache = new(StringComparer.OrdinalIgnoreCase);
         private sealed record ProgramFolderCacheEntry(List<string> Directories, List<string> Files);
+        private readonly object shellIconCacheLock = new();
+        private readonly Dictionary<string, Bitmap> shellIconCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly StringBuilder startMenuSearchQuery = new();
         private DateTime startMenuSearchLastInputUtc = DateTime.MinValue;
         private readonly List<ToolStripItem> startMenuSearchResultItems = new();
@@ -262,6 +264,7 @@ namespace win9xplorer
         private bool suppressStartMenuSearchTextChanged;
         private readonly List<string> addressToolbarHistory = new();
         private readonly List<ProgramSearchEntry> programSearchEntriesCache = new();
+        private readonly object programSearchEntriesCacheLock = new();
         private readonly List<ProgramSearchEntry> startMenuRecentPrograms = new();
         private readonly Dictionary<ToolStripMenuItem, EventHandler> menuDropDownOpeningHandlers = new();
         private readonly ToolbarComponents quickLaunchToolbar;
@@ -1001,10 +1004,10 @@ namespace win9xplorer
             };
 
             spotifyToolbarGripPanel = CreateGripPanel(forwardChildResizeMouse: true);
-            quickLaunchToolbar = new ToolbarComponents(quickLaunchPanel, quickLaunchGripPanel);
-            addressToolbar = new ToolbarComponents(addressToolbarPanel, addressToolbarGripPanel);
-            volumeToolbar = new ToolbarComponents(volumeToolbarPanel, volumeToolbarGripPanel);
-            spotifyToolbar = new ToolbarComponents(spotifyToolbarPanel, spotifyToolbarGripPanel);
+            quickLaunchToolbar = new ToolbarComponents(quickLaunchPanel, () => quickLaunchGripPanel);
+            addressToolbar = new ToolbarComponents(addressToolbarPanel, () => addressToolbarGripPanel);
+            volumeToolbar = new ToolbarComponents(volumeToolbarPanel, () => volumeToolbarGripPanel);
+            spotifyToolbar = new ToolbarComponents(spotifyToolbarPanel, () => spotifyToolbarGripPanel);
             toolbarsById = new Dictionary<ToolbarId, ToolbarComponents>
             {
                 [ToolbarId.QuickLaunch] = quickLaunchToolbar,
@@ -1208,10 +1211,8 @@ namespace win9xplorer
             Controls.Add(taskbarResizeHandlePanel);
             trayIconsPanel.Controls.Add(customVolumeIcon);
             trayIconsPanel.Controls.Add(languageIndicatorLabel);
-            trayIconsPanel.Controls.Add(imeIndicatorLabel);
             trayToolTip.SetToolTip(customVolumeIcon, "Volume");
             trayToolTip.SetToolTip(languageIndicatorLabel, "Keyboard language");
-            trayToolTip.SetToolTip(imeIndicatorLabel, "IME mode");
             quickLaunchToolTip.SetToolTip(btnSpotifyPrevious, "Spotify Previous");
             quickLaunchToolTip.SetToolTip(btnSpotifyPlayPause, "Spotify Play/Pause");
             quickLaunchToolTip.SetToolTip(btnSpotifyNext, "Spotify Next");
@@ -1575,12 +1576,21 @@ namespace win9xplorer
             spotifyPlayIconImage.Dispose();
             spotifyNextIconImage.Dispose();
             volumePopup.Dispose();
-            timeDetailsPopup.Dispose();
+            timeDetailsPopup?.Dispose();
+            timeDetailsPopup = null;
             UninstallKeyboardHook();
             UninstallMouseHook();
             UnregisterAppBar(); // Unregister AppBar before cleanup
             quickLaunchRefreshMonitor.Dispose();
             TeardownTrayService();
+            lock (shellIconCacheLock)
+            {
+                foreach (var cachedIcon in shellIconCache.Values)
+                {
+                    cachedIcon.Dispose();
+                }
+                shellIconCache.Clear();
+            }
 
             TrySetExplorerTaskbarHidden(false);
             shellManager.AppBarManager.SignalGracefulShutdown();
@@ -1655,7 +1665,7 @@ namespace win9xplorer
             var windowsAppsLoadingItem = CreateMenuItem("(Loading...)", null, null);
             windowsAppsLoadingItem.Enabled = false;
             windowsAppsItem.DropDownItems.Add(windowsAppsLoadingItem);
-            windowsAppsItem.DropDownOpening += (_, _) => PopulateSubmenuWithOptionalDelay(windowsAppsItem, () => PopulateWindowsAppsMenu(windowsAppsItem.DropDownItems));
+            windowsAppsItem.DropDownOpening += (_, _) => PopulateWindowsAppsMenuAsync(windowsAppsItem);
             menu.Items.Add(windowsAppsItem);
 
             var documentsItem = CreateMenuItem("Documents", documentsMenuIcon, null);
@@ -1664,34 +1674,6 @@ namespace win9xplorer
             documentsItem.DropDownItems.Add(documentsLoadingItem);
             documentsItem.DropDownOpening += (_, _) => PopulateSubmenuWithOptionalDelay(documentsItem, () => PopulateDocumentsMenu(documentsItem.DropDownItems));
             menu.Items.Add(documentsItem);
-
-            var settingsItem = CreateMenuItem("Settings", settingsMenuIcon, null);
-            settingsItem.DropDownItems.Add(CreateMenuItem(
-                "Control Panel",
-                SystemIcons.Shield.ToBitmap(),
-                (_, _) => LaunchProcess("control.exe"),
-                new ProgramSearchEntry("Control Panel", EncodeCommandLaunchPath("control.exe", null), IsShellApp: false)));
-            settingsItem.DropDownItems.Add(CreateMenuItem(
-                "Printers",
-                LoadMenuAsset("Prints Folder.png", SystemIcons.Application.ToBitmap()),
-                (_, _) => LaunchProcess("control.exe", "printers"),
-                new ProgramSearchEntry("Printers", EncodeCommandLaunchPath("control.exe", "printers"), IsShellApp: false)));
-            settingsItem.DropDownItems.Add(CreateMenuItem(
-                "Network Connections",
-                LoadMenuAsset("Internet Network.png", SystemIcons.Application.ToBitmap()),
-                (_, _) => OpenNetworkConnectionsSettings(),
-                new ProgramSearchEntry("Network Connections", EncodeCommandLaunchPath("control.exe", "ncpa.cpl"), IsShellApp: false)));
-            settingsItem.DropDownItems.Add(CreateMenuItem(
-                "Taskbar and Start Menu...",
-                LoadMenuAsset("Taskbar and Start Menu.png", SystemIcons.Application.ToBitmap()),
-                (_, _) => OpenTaskbarSettings(),
-                new ProgramSearchEntry("Taskbar and Start Menu...", EncodeCommandLaunchPath("control.exe", "/name Microsoft.TaskbarAndStartMenu"), IsShellApp: false)));
-            settingsItem.DropDownItems.Add(CreateMenuItem(
-                "Folder Options...",
-                LoadMenuAsset("Folder Open.png", SystemIcons.Application.ToBitmap()),
-                (_, _) => OpenFolderOptionsSettings(),
-                new ProgramSearchEntry("Folder Options...", EncodeCommandLaunchPath("control.exe", "folders"), IsShellApp: false)));
-            menu.Items.Add(settingsItem);
 
             var systemToolsItem = CreateMenuItem("System Tools", LoadMenuAsset("Computer Management.png", SystemIcons.Application.ToBitmap()), null);
             PopulateSystemToolsMenu(systemToolsItem.DropDownItems);
@@ -1972,14 +1954,18 @@ namespace win9xplorer
 
         private void InvalidateProgramMenuCache()
         {
-            programFolderCache.Clear();
-            programSearchEntriesCache.Clear();
+            lock (programSearchEntriesCacheLock)
+            {
+                programFolderCache.Clear();
+                programSearchEntriesCache.Clear();
+            }
         }
 
         private void InvalidateStartMenuCache()
         {
             InvalidateProgramMenuCache();
             ResetStartMenuSubmenuSessionCache();
+            populatedSubmenusThisSession.RemoveWhere(item => string.Equals(item.Text, "Windows Apps", StringComparison.OrdinalIgnoreCase));
             UpdateStartMenuSearchResultsFromCurrentQuery();
         }
 
@@ -2136,31 +2122,88 @@ namespace win9xplorer
             }
         }
 
-        private void PopulateWindowsAppsMenu(ToolStripItemCollection items)
+        private void PopulateWindowsAppsMenuAsync(ToolStripMenuItem windowsAppsItem)
         {
-            items.Clear();
-
-            var apps = GetProgramSearchEntries()
-                .Where(entry => entry.IsShellApp)
-                .OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-
-            if (apps.Count == 0)
+            if (populatedSubmenusThisSession.Contains(windowsAppsItem))
             {
-                var emptyItem = CreateMenuItem("(No Windows Apps found)", null, null);
-                emptyItem.Enabled = false;
-                items.Add(emptyItem);
                 return;
             }
 
-            foreach (var app in apps)
-            {
-                var item = CreateMenuItem(app.DisplayName, GetProgramSearchEntryIcon(app), (_, _) => LaunchProgramSearchEntry(app), app);
-                AttachProgramSearchContextMenu(item, app, trackRecentUsage: true);
-                items.Add(item);
-            }
+            populatedSubmenusThisSession.Add(windowsAppsItem);
+            windowsAppsItem.DropDownItems.Clear();
+            var loadingItem = CreateMenuItem("(Loading...)", null, null);
+            loadingItem.Enabled = false;
+            windowsAppsItem.DropDownItems.Add(loadingItem);
 
-            ApplyTwoColumnLayoutIfNeeded(items);
+            _ = Task.Run(() =>
+            {
+                var apps = GetProgramSearchEntries()
+                    .Where(entry => entry.IsShellApp)
+                    .OrderBy(entry => entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+                    .ToList();
+                var appItems = apps
+                    .Select(app => new
+                    {
+                        App = app,
+                        Icon = GetProgramSearchEntryIcon(app)
+                    })
+                    .ToList();
+
+                if (IsDisposed || Disposing)
+                {
+                    foreach (var prepared in appItems)
+                    {
+                        prepared.Icon?.Dispose();
+                    }
+                    return;
+                }
+
+                BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed || Disposing || !windowsAppsItem.Visible)
+                    {
+                        foreach (var prepared in appItems)
+                        {
+                            prepared.Icon?.Dispose();
+                        }
+                        return;
+                    }
+
+                    var wasDropDownVisible = windowsAppsItem.DropDown.Visible;
+                    if (wasDropDownVisible)
+                    {
+                        windowsAppsItem.HideDropDown();
+                    }
+
+                    windowsAppsItem.DropDown.SuspendLayout();
+                    windowsAppsItem.DropDownItems.Clear();
+
+                    if (appItems.Count == 0)
+                    {
+                        var emptyItem = CreateMenuItem("(No Windows Apps found)", null, null);
+                        emptyItem.Enabled = false;
+                        windowsAppsItem.DropDownItems.Add(emptyItem);
+                    }
+                    else
+                    {
+                        foreach (var prepared in appItems)
+                        {
+                            var item = CreateMenuItem(prepared.App.DisplayName, prepared.Icon, (_, _) => LaunchProgramSearchEntry(prepared.App), prepared.App);
+                            AttachProgramSearchContextMenu(item, prepared.App, trackRecentUsage: true);
+                            windowsAppsItem.DropDownItems.Add(item);
+                            prepared.Icon?.Dispose();
+                        }
+
+                        ApplyTwoColumnLayoutIfNeeded(windowsAppsItem.DropDownItems);
+                    }
+                    windowsAppsItem.DropDown.ResumeLayout(performLayout: true);
+
+                    if (wasDropDownVisible || !windowsAppsItem.DropDown.Visible)
+                    {
+                        windowsAppsItem.ShowDropDown();
+                    }
+                }));
+            });
         }
 
         private void ApplyTwoColumnLayoutIfNeeded(ToolStripItemCollection items)
@@ -2890,34 +2933,37 @@ namespace win9xplorer
 
         private List<ProgramSearchEntry> GetProgramSearchEntries()
         {
-            EnsureProgramMenuCacheFresh();
-
-            if (programSearchEntriesCache.Count > 0)
+            lock (programSearchEntriesCacheLock)
             {
-                return programSearchEntriesCache;
-            }
+                EnsureProgramMenuCacheFresh();
 
-            programSearchEntriesCache.Clear();
-            var dedupKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var roots = new[]
-            {
-                Environment.GetFolderPath(Environment.SpecialFolder.Programs),
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
-            };
-
-            foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                if (!Directory.Exists(root))
+                if (programSearchEntriesCache.Count > 0)
                 {
-                    continue;
+                    return programSearchEntriesCache;
                 }
 
-                CollectProgramSearchEntries(root, depth: 0, dedupKeys);
+                programSearchEntriesCache.Clear();
+                var dedupKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var roots = new[]
+                {
+                    Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms)
+                };
+
+                foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!Directory.Exists(root))
+                    {
+                        continue;
+                    }
+
+                    CollectProgramSearchEntries(root, depth: 0, dedupKeys);
+                }
+
+                CollectStartAppsSearchEntries(dedupKeys);
+
+                return programSearchEntriesCache;
             }
-
-            CollectStartAppsSearchEntries(dedupKeys);
-
-            return programSearchEntriesCache;
         }
 
         private void CollectProgramSearchEntries(string folderPath, int depth, HashSet<string> dedupKeys)
@@ -2965,10 +3011,12 @@ namespace win9xplorer
                     StartInfo = new ProcessStartInfo
                     {
                         FileName = "powershell.exe",
-                        Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-StartApps | ForEach-Object { '{0}|{1}' -f $_.Name, $_.AppID }\"",
+                        Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); Get-StartApps | ForEach-Object { '{0}|{1}' -f $_.Name, $_.AppID }\"",
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8,
                         CreateNoWindow = true
                     }
                 };
@@ -3056,6 +3104,11 @@ namespace win9xplorer
                     return LoadMenuAsset("Application Window.png", SystemIcons.Application.ToBitmap());
                 }
 
+                if (string.Equals(Path.GetExtension(entry.LaunchPath), ".lnk", StringComparison.OrdinalIgnoreCase))
+                {
+                    return GetQuickLaunchButtonIcon(entry.LaunchPath);
+                }
+
                 return GetSmallShellIcon(entry.LaunchPath, isDirectory: false);
             }
 
@@ -3063,6 +3116,34 @@ namespace win9xplorer
             return GetSmallShellIcon(shellPath, isDirectory: false)
                 ?? GetSmallShellIconFromShellPath(shellPath)
                 ?? LoadMenuAsset("Application Window.png", SystemIcons.Application.ToBitmap());
+        }
+
+        private Image? GetCachedShellIcon(string cacheKey, Func<Image?> loader)
+        {
+            lock (shellIconCacheLock)
+            {
+                if (shellIconCache.TryGetValue(cacheKey, out var cached))
+                {
+                    return (Image)cached.Clone();
+                }
+            }
+
+            var loaded = loader();
+            if (loaded is not Bitmap loadedBitmap)
+            {
+                loaded?.Dispose();
+                return null;
+            }
+
+            lock (shellIconCacheLock)
+            {
+                if (!shellIconCache.ContainsKey(cacheKey))
+                {
+                    shellIconCache[cacheKey] = (Bitmap)loadedBitmap.Clone();
+                }
+
+                return (Image)shellIconCache[cacheKey].Clone();
+            }
         }
 
         private static char? TryConvertVirtualKeyToSearchChar(int vkCode)
@@ -3108,54 +3189,30 @@ namespace win9xplorer
             }
         }
 
-        private static Image? GetSmallShellIcon(string pathOrExtension, bool isDirectory)
+        private Image? GetSmallShellIcon(string pathOrExtension, bool isDirectory)
         {
-            var shfi = new WinApi.SHFILEINFO();
-            var flags = WinApi.SHGFI_ICON | WinApi.SHGFI_SMALLICON;
-            var isShellNamespacePath = pathOrExtension.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ||
-                                       pathOrExtension.Contains("AppsFolder", StringComparison.OrdinalIgnoreCase);
+            var cacheKey = $"shell|{isDirectory}|{pathOrExtension}";
+            return GetCachedShellIcon(cacheKey, () =>
+            {
+                var shfi = new WinApi.SHFILEINFO();
+                var flags = WinApi.SHGFI_ICON | WinApi.SHGFI_SMALLICON;
+                var isShellNamespacePath = pathOrExtension.StartsWith("shell:", StringComparison.OrdinalIgnoreCase) ||
+                                           pathOrExtension.Contains("AppsFolder", StringComparison.OrdinalIgnoreCase);
 
-            if (isDirectory)
-            {
-                flags |= WinApi.SHGFI_USEFILEATTRIBUTES;
-                WinApi.SHGetFileInfo(pathOrExtension, WinApi.FILE_ATTRIBUTE_DIRECTORY, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
-            }
-            else
-            {
-                if (!isShellNamespacePath && !File.Exists(pathOrExtension))
+                if (isDirectory)
                 {
                     flags |= WinApi.SHGFI_USEFILEATTRIBUTES;
+                    WinApi.SHGetFileInfo(pathOrExtension, WinApi.FILE_ATTRIBUTE_DIRECTORY, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
                 }
-
-                WinApi.SHGetFileInfo(pathOrExtension, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
-            }
-
-            if (shfi.hIcon == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            using var icon = Icon.FromHandle(shfi.hIcon);
-            var bitmap = icon.ToBitmap();
-            WinApi.DestroyIcon(shfi.hIcon);
-            return new Bitmap(bitmap, new Size(16, 16));
-        }
-
-        private static Image? GetSmallShellIconFromShellPath(string shellPath)
-        {
-            IntPtr pidl = IntPtr.Zero;
-
-            try
-            {
-                var parseResult = WinApi.SHParseDisplayName(shellPath, IntPtr.Zero, out pidl, 0, out _);
-                if (parseResult != 0 || pidl == IntPtr.Zero)
+                else
                 {
-                    return null;
-                }
+                    if (!isShellNamespacePath && !File.Exists(pathOrExtension))
+                    {
+                        flags |= WinApi.SHGFI_USEFILEATTRIBUTES;
+                    }
 
-                var shfi = new WinApi.SHFILEINFO();
-                var flags = WinApi.SHGFI_PIDL | WinApi.SHGFI_ICON | WinApi.SHGFI_SMALLICON;
-                WinApi.SHGetFileInfo(pidl, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
+                    WinApi.SHGetFileInfo(pathOrExtension, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
+                }
 
                 if (shfi.hIcon == IntPtr.Zero)
                 {
@@ -3166,14 +3223,46 @@ namespace win9xplorer
                 var bitmap = icon.ToBitmap();
                 WinApi.DestroyIcon(shfi.hIcon);
                 return new Bitmap(bitmap, new Size(16, 16));
-            }
-            finally
+            });
+        }
+
+        private Image? GetSmallShellIconFromShellPath(string shellPath)
+        {
+            var cacheKey = $"shellpath|{shellPath}";
+            return GetCachedShellIcon(cacheKey, () =>
             {
-                if (pidl != IntPtr.Zero)
+                IntPtr pidl = IntPtr.Zero;
+
+                try
                 {
-                    WinApi.CoTaskMemFree(pidl);
+                    var parseResult = WinApi.SHParseDisplayName(shellPath, IntPtr.Zero, out pidl, 0, out _);
+                    if (parseResult != 0 || pidl == IntPtr.Zero)
+                    {
+                        return null;
+                    }
+
+                    var shfi = new WinApi.SHFILEINFO();
+                    var flags = WinApi.SHGFI_PIDL | WinApi.SHGFI_ICON | WinApi.SHGFI_SMALLICON;
+                    WinApi.SHGetFileInfo(pidl, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
+
+                    if (shfi.hIcon == IntPtr.Zero)
+                    {
+                        return null;
+                    }
+
+                    using var icon = Icon.FromHandle(shfi.hIcon);
+                    var bitmap = icon.ToBitmap();
+                    WinApi.DestroyIcon(shfi.hIcon);
+                    return new Bitmap(bitmap, new Size(16, 16));
                 }
-            }
+                finally
+                {
+                    if (pidl != IntPtr.Zero)
+                    {
+                        WinApi.CoTaskMemFree(pidl);
+                    }
+                }
+            });
         }
 
         private static Image LoadMenuAsset(string fileName, Image fallback)
@@ -3512,11 +3601,14 @@ namespace win9xplorer
 
         private void PopulateSystemToolsMenu(ToolStripItemCollection items)
         {
+            items.Add(CreateMenuItem("Control Panel", SystemIcons.Shield.ToBitmap(), (_, _) => LaunchProcess("control.exe"), new ProgramSearchEntry("Control Panel", EncodeCommandLaunchPath("control.exe", null), IsShellApp: false)));
+            items.Add(new ToolStripSeparator());
             items.Add(CreateMenuItem("Task Manager", LoadMenuAsset("Task Manager.png", SystemIcons.Application.ToBitmap()), (_, _) => OpenTaskManager(), new ProgramSearchEntry("Task Manager", EncodeCommandLaunchPath("taskmgr.exe", null), IsShellApp: false)));
             items.Add(CreateMenuItem("win9xplorer Task Manager", LoadMenuAsset("Task Manager.png", SystemIcons.Application.ToBitmap()), (_, _) => OpenWin9xplorerTaskManager(), new ProgramSearchEntry("win9xplorer Task Manager", EncodeCommandLaunchPath("win9xplorer-taskmgr", null), IsShellApp: false)));
             items.Add(new ToolStripSeparator());
             items.Add(CreateMenuItem("Command Prompt", LoadMenuAsset("Command Prompt.png", SystemIcons.Application.ToBitmap()), (_, _) => LaunchProcess("cmd.exe"), new ProgramSearchEntry("Command Prompt", EncodeCommandLaunchPath("cmd.exe", null), IsShellApp: false)));
             items.Add(CreateMenuItem("PowerShell", SystemIcons.Application.ToBitmap(), (_, _) => LaunchProcess("powershell.exe"), new ProgramSearchEntry("PowerShell", EncodeCommandLaunchPath("powershell.exe", null), IsShellApp: false)));
+            items.Add(CreateMenuItem("Environment Variables...", settingsMenuIcon, (_, _) => OpenEnvironmentVariablesSettings(), new ProgramSearchEntry("Environment Variables", EncodeCommandLaunchPath("rundll32.exe", "sysdm.cpl,EditEnvironmentVariables"), IsShellApp: false)));
             items.Add(CreateMenuItem("Run...", runMenuIcon, (_, _) => LaunchProcess("rundll32.exe", "shell32.dll,#61"), new ProgramSearchEntry("Run...", EncodeCommandLaunchPath("rundll32.exe", "shell32.dll,#61"), IsShellApp: false)));
             items.Add(new ToolStripSeparator());
             items.Add(CreateMenuItem("Computer Management", LoadMenuAsset("Computer Management.png", SystemIcons.Application.ToBitmap()), (_, _) => LaunchProcess("compmgmt.msc"), new ProgramSearchEntry("Computer Management", EncodeCommandLaunchPath("compmgmt.msc", null), IsShellApp: false)));
@@ -4787,7 +4879,7 @@ namespace win9xplorer
             return separator;
         }
 
-        private static Image? GetQuickLaunchButtonIcon(string quickLaunchPath)
+        private Image? GetQuickLaunchButtonIcon(string quickLaunchPath)
         {
             var extension = Path.GetExtension(quickLaunchPath);
             if (!extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
@@ -4805,7 +4897,8 @@ namespace win9xplorer
                 }
             }
 
-            return GetSmallShellIcon(quickLaunchPath, isDirectory: false);
+            return GetSmallShellIcon(quickLaunchPath, isDirectory: false)
+                ?? LoadMenuAsset("Application Window.png", SystemIcons.Application.ToBitmap());
         }
 
         private static string? ResolveShortcutTargetPath(string shortcutPath)
@@ -5641,9 +5734,10 @@ namespace win9xplorer
 
         private void ShowTimeDetailsModal()
         {
+            var popup = EnsureTimeDetailsPopup();
             var clockBounds = lblClock.RectangleToScreen(lblClock.ClientRectangle);
-            var popupX = clockBounds.Right - timeDetailsPopup.Width;
-            var popupY = clockBounds.Top - timeDetailsPopup.Height - 4;
+            var popupX = clockBounds.Right - popup.Width;
+            var popupY = clockBounds.Top - popup.Height - 4;
             var screenBounds = Screen.FromPoint(clockBounds.Location).WorkingArea;
 
             if (popupX < screenBounds.Left)
@@ -5651,9 +5745,9 @@ namespace win9xplorer
                 popupX = screenBounds.Left;
             }
 
-            if (popupX + timeDetailsPopup.Width > screenBounds.Right)
+            if (popupX + popup.Width > screenBounds.Right)
             {
-                popupX = screenBounds.Right - timeDetailsPopup.Width;
+                popupX = screenBounds.Right - popup.Width;
             }
 
             if (popupY < screenBounds.Top)
@@ -5661,13 +5755,23 @@ namespace win9xplorer
                 popupY = clockBounds.Bottom + 4;
             }
 
-            if (timeDetailsPopup.Visible)
+            if (popup.Visible)
             {
-                timeDetailsPopup.Hide();
+                popup.Hide();
                 return;
             }
 
-            timeDetailsPopup.ShowAt(new Point(popupX, popupY));
+            popup.ShowAt(new Point(popupX, popupY));
+        }
+
+        private TimeDetailsForm EnsureTimeDetailsPopup()
+        {
+            if (timeDetailsPopup is null || timeDetailsPopup.IsDisposed)
+            {
+                timeDetailsPopup = new TimeDetailsForm();
+            }
+
+            return timeDetailsPopup;
         }
 
         private static void OpenDateTimeSettings()
@@ -5727,6 +5831,36 @@ namespace win9xplorer
             catch (Exception ex)
             {
                 Debug.WriteLine($"Failed to open taskbar settings: {ex.Message}");
+            }
+        }
+
+        private static void OpenEnvironmentVariablesSettings()
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "rundll32.exe",
+                    Arguments = "sysdm.cpl,EditEnvironmentVariables",
+                    UseShellExecute = true
+                });
+                return;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "SystemPropertiesAdvanced.exe",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to open Environment Variables settings: {ex.Message}");
             }
         }
 
@@ -6333,7 +6467,10 @@ namespace win9xplorer
                 startMenu.Hide();
                 ResetStartMenuSearch();
                 ResetStartMenuSubmenuSessionCache();
+                btnStart.Capture = false;
+                ActiveControl = null;
                 btnStart.Invalidate();
+                btnStart.Update();
                 return;
             }
 
@@ -6354,7 +6491,10 @@ namespace win9xplorer
                 startMenu.Hide();
                 ResetStartMenuSearch();
                 ResetStartMenuSubmenuSessionCache();
+                btnStart.Capture = false;
+                ActiveControl = null;
                 btnStart.Invalidate();
+                btnStart.Update();
             }
         }
 
@@ -6613,14 +6753,8 @@ namespace win9xplorer
                 trayIconsPanel.Controls.Add(languageIndicatorLabel);
             }
 
-            if (!trayIconsPanel.Controls.Contains(imeIndicatorLabel))
-            {
-                trayIconsPanel.Controls.Add(imeIndicatorLabel);
-            }
-
             trayIconsPanel.Controls.SetChildIndex(customVolumeIcon, trayIconsPanel.Controls.Count - 1);
             trayIconsPanel.Controls.SetChildIndex(languageIndicatorLabel, trayIconsPanel.Controls.Count - 1);
-            trayIconsPanel.Controls.SetChildIndex(imeIndicatorLabel, trayIconsPanel.Controls.Count - 1);
             UpdateInputMethodIndicators();
 
             ResizeTrayPanel();
@@ -6822,7 +6956,7 @@ namespace win9xplorer
 
         private void ResizeTrayPanel(bool allowShrink = false)
         {
-            var desiredCount = trayIconControls.Count + 3;
+            var desiredCount = trayIconControls.Count + 2;
             if (desiredCount >= trayIconSlotCount || allowShrink)
             {
                 trayIconSlotCount = desiredCount;
@@ -7823,7 +7957,15 @@ namespace win9xplorer
 
         private static Bitmap ResizeIconImage(Image source, int size)
         {
-            return new Bitmap(source, new Size(size, size));
+            var scaled = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var graphics = Graphics.FromImage(scaled);
+            graphics.Clear(Color.Transparent);
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
+            graphics.DrawImage(source, new Rectangle(0, 0, size, size), new Rectangle(0, 0, source.Width, source.Height), GraphicsUnit.Pixel);
+            return scaled;
         }
 
         private static Bitmap AddIconMargin(Image source, int rightMargin, int bottomMargin)
@@ -8171,7 +8313,7 @@ namespace win9xplorer
                 var keepVisible = nearBottomEdge || cursorOverExpandedArea ||
                     startMenu.Visible || taskWindowMenu.Visible || taskbarContextMenu.Visible ||
                     clockContextMenu.Visible || languageIndicatorContextMenu.Visible || imeIndicatorContextMenu.Visible || quickLaunchItemContextMenu.Visible ||
-                    volumePopup.Visible || timeDetailsPopup.Visible || ContainsFocus;
+                    volumePopup.Visible || (timeDetailsPopup?.Visible ?? false) || ContainsFocus;
 
                 taskbarY = keepVisible ? screenBounds.Bottom - totalHeight : screenBounds.Bottom - 2;
             }
